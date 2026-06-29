@@ -154,6 +154,14 @@ jobs:
           path: ruoyi
           fetch-depth: 1
 
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ env.TARGET_OWNER }}
+
       - name: Checkout business SQL repo
         if: ${{ env.BUSINESS_SQL_REPO != '' }}
         uses: actions/checkout@v5
@@ -162,6 +170,7 @@ jobs:
           ref: ${{ env.BUSINESS_SQL_REF }}
           path: business-sql-source
           fetch-depth: 1
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Prepare business SQL
         if: ${{ env.BUSINESS_SQL_REPO != '' && env.BUSINESS_SQL_PATH != '' }}
@@ -258,14 +267,6 @@ jobs:
           mysqladmin ping -h 127.0.0.1 -proot
           redis-cli -h 127.0.0.1 -p 6379 ping
           ss -lntp | grep -E ':3306|:6379' || true
-
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ env.TARGET_OWNER }}
 
       - name: Run codegen
         id: run-codegen
