@@ -58,6 +58,35 @@ def module_suffix(module_name: str) -> str | None:
     return None
 
 
+def target_module_artifact(source_module_name: str, split_kind: str | None, layout_mode: str) -> str:
+    base = module_key(source_module_name)
+    if layout_mode == "future-layout":
+        if split_kind:
+            return f"future-module-{base}-{split_kind}"
+        return f"future-module-{base}"
+    if split_kind:
+        if source_module_name.endswith(f"-{split_kind}"):
+            return source_module_name
+        return f"{source_module_name}-{split_kind}"
+    return source_module_name
+
+
+def target_module_dir(backend_root: Path, source_module_name: str, split_kind: str | None, layout_mode: str) -> Path:
+    artifact = target_module_artifact(source_module_name, split_kind, layout_mode)
+    if layout_mode == "future-layout":
+        return backend_root / "modules" / "custom" / module_key(source_module_name) / artifact
+    return backend_root / artifact
+
+
+def pom_module_path(backend_root: Path, module_dir: Path) -> str:
+    return module_dir.relative_to(backend_root).as_posix()
+
+
+def validate_layout_mode(layout_mode: str) -> None:
+    if layout_mode not in {"yudao-upstream", "future-layout"}:
+        raise ValueError(f"unsupported layout mode: {layout_mode}")
+
+
 def ensure_module_pom(backend_root: Path, module_name: str) -> None:
     module_dir = backend_root / module_name
     target_pom = module_dir / "pom.xml"
@@ -81,20 +110,19 @@ def ensure_module_pom(backend_root: Path, module_name: str) -> None:
     target_pom.write_text(content, encoding="utf-8")
 
 
-def ensure_split_module_pom(backend_root: Path, module_name: str, split_kind: str, api_module_name: str | None = None) -> None:
-    module_dir = backend_root / module_name
+def ensure_split_module_pom(module_dir: Path, artifact_id: str, split_kind: str, api_artifact_id: str | None = None) -> None:
     target_pom = module_dir / "pom.xml"
     if target_pom.exists():
         return
 
-    description = f"{module_name.removeprefix('yudao-module-')} 模块，自动生成。"
+    description = f"{artifact_id} 模块，自动生成。"
     dependencies = ""
-    if split_kind == "biz" and api_module_name:
+    if split_kind == "biz" and api_artifact_id:
         dependencies = f"""
     <dependencies>
         <dependency>
             <groupId>cn.iocoder.boot</groupId>
-            <artifactId>{api_module_name}</artifactId>
+            <artifactId>{api_artifact_id}</artifactId>
             <version>${{revision}}</version>
         </dependency>
     </dependencies>
@@ -112,7 +140,7 @@ def ensure_split_module_pom(backend_root: Path, module_name: str, split_kind: st
         <version>${{revision}}</version>
     </parent>
 
-    <artifactId>{module_name}</artifactId>
+    <artifactId>{artifact_id}</artifactId>
     <packaging>jar</packaging>
     <name>${{project.artifactId}}</name>
     <description>{description}</description>
@@ -121,35 +149,74 @@ def ensure_split_module_pom(backend_root: Path, module_name: str, split_kind: st
     target_pom.write_text(content, encoding="utf-8")
 
 
+def ensure_future_module_aggregate_pom(backend_root: Path, module: str, module_dirs: list[Path]) -> None:
+    aggregate_dir = backend_root / "modules" / "custom" / module
+    aggregate_dir.mkdir(parents=True, exist_ok=True)
+    aggregate_pom = aggregate_dir / "pom.xml"
+    modules_xml = "".join(f"        <module>{d.name}</module>\n" for d in module_dirs)
+    content = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<project xmlns=\"http://maven.apache.org/POM/4.0.0\"
+         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"
+         xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>cn.iocoder.boot</groupId>
+        <artifactId>yudao</artifactId>
+        <version>${{revision}}</version>
+    </parent>
+
+    <artifactId>future-module-{module}</artifactId>
+    <packaging>pom</packaging>
+    <name>${{project.artifactId}}</name>
+    <description>{module} 聚合模块，自动生成。</description>
+
+    <modules>
+{modules_xml}    </modules>
+</project>
+"""
+    aggregate_pom.write_text(content, encoding="utf-8")
+
 def insert_before_first(text: str, needle: str, block: str) -> str:
     if needle not in text:
         return text
     return text.replace(needle, block + needle, 1)
 
 
-def ensure_root_module_declared(backend_root: Path, module_name: str) -> None:
+def ensure_root_module_declared(backend_root: Path, module_path: str) -> None:
     root_pom = backend_root / "pom.xml"
     content = root_pom.read_text(encoding="utf-8")
-    marker = f"<module>{module_name}</module>"
+    marker = f"<module>{module_path}</module>"
     if marker in content:
         return
 
-    block = f"        <module>{module_name}</module>\n"
+    block = f"        <module>{module_path}</module>\n"
     updated = insert_before_first(content, "    </modules>", block)
     root_pom.write_text(updated, encoding="utf-8")
 
 
-def ensure_server_dependency(backend_root: Path, module_name: str) -> None:
-    server_pom = backend_root / "yudao-server" / "pom.xml"
+def server_pom_path(backend_root: Path, layout_mode: str) -> Path:
+    candidates = []
+    if layout_mode == "future-layout":
+        candidates.append(backend_root / "apps" / "future-server" / "pom.xml")
+    candidates.append(backend_root / "yudao-server" / "pom.xml")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def ensure_server_dependency(backend_root: Path, module_artifact_id: str, layout_mode: str = "yudao-upstream") -> None:
+    server_pom = server_pom_path(backend_root, layout_mode)
     content = server_pom.read_text(encoding="utf-8")
-    marker = f"<artifactId>{module_name}</artifactId>"
+    marker = f"<artifactId>{module_artifact_id}</artifactId>"
     if marker in content:
         return
 
     block = f"""
         <dependency>
             <groupId>cn.iocoder.boot</groupId>
-            <artifactId>{module_name}</artifactId>
+            <artifactId>{module_artifact_id}</artifactId>
             <version>${{revision}}</version>
         </dependency>
 """
@@ -330,7 +397,13 @@ def classify_module_files(module_dir: Path, settings: dict[str, Any]) -> tuple[l
     return api_files, biz_files
 
 
-def sync_backend(generated_dir: Path, backend_root: Path, split_config: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
+def sync_backend(
+    generated_dir: Path,
+    backend_root: Path,
+    split_config: dict[str, Any],
+    layout_mode: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    validate_layout_mode(layout_mode)
     modules = find_backend_modules(generated_dir)
     backend_modules: list[str] = []
     split_results: list[dict[str, Any]] = []
@@ -341,67 +414,105 @@ def sync_backend(generated_dir: Path, backend_root: Path, split_config: dict[str
 
     for module_dir in modules:
         module_name = module_dir.name
-        # If upstream already generated api/biz modules, preserve them directly.
-        if module_suffix(module_name):
-            target_module_dir = backend_root / module_name
-            target_module_dir.mkdir(parents=True, exist_ok=True)
-            copy_tree_contents(module_dir, target_module_dir)
-            ensure_module_pom(backend_root, module_name)
-            ensure_root_module_declared(backend_root, module_name)
-            if module_suffix(module_name) == "biz":
-                ensure_server_dependency(backend_root, module_name)
-            backend_modules.append(module_name)
-            split_results.append({"module": module_key(module_name), "source": module_name, "mode": "already_split"})
-            print(f"Synced already split backend module {module_name}")
+        source_split_kind = module_suffix(module_name)
+
+        # If upstream already generated api/biz modules, preserve that split but map it to the requested layout.
+        if source_split_kind:
+            artifact = target_module_artifact(module_name, source_split_kind, layout_mode)
+            target_dir = target_module_dir(backend_root, module_name, source_split_kind, layout_mode)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            copy_tree_contents(module_dir, target_dir)
+            ensure_split_module_pom(target_dir, artifact, source_split_kind)
+            if layout_mode == "future-layout":
+                ensure_future_module_aggregate_pom(backend_root, module_key(module_name), [target_dir])
+                ensure_root_module_declared(backend_root, f"modules/custom/{module_key(module_name)}")
+            else:
+                ensure_root_module_declared(backend_root, pom_module_path(backend_root, target_dir))
+            if source_split_kind == "biz":
+                ensure_server_dependency(backend_root, artifact, layout_mode)
+            backend_modules.append(pom_module_path(backend_root, target_dir) if layout_mode == "future-layout" else artifact)
+            split_results.append(
+                {
+                    "module": module_key(module_name),
+                    "source": module_name,
+                    "mode": "already_split",
+                    "layout_mode": layout_mode,
+                    "artifact": artifact,
+                    "target_path": pom_module_path(backend_root, target_dir),
+                }
+            )
+            print(f"Synced already split backend module {module_name} -> {target_dir}")
             continue
 
         settings = split_settings(split_config, module_name)
         if not settings["enabled"]:
-            target_module_dir = backend_root / module_name
-            target_module_dir.mkdir(parents=True, exist_ok=True)
-            copy_tree_contents(module_dir, target_module_dir)
-            ensure_module_pom(backend_root, module_name)
-            ensure_root_module_declared(backend_root, module_name)
-            ensure_server_dependency(backend_root, module_name)
-            backend_modules.append(module_name)
-            split_results.append({"module": settings["module"], "source": module_name, "mode": "disabled"})
-            print(f"Synced backend module {module_name}")
+            artifact = target_module_artifact(module_name, None, layout_mode)
+            target_dir = target_module_dir(backend_root, module_name, None, layout_mode)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            copy_tree_contents(module_dir, target_dir)
+            ensure_split_module_pom(target_dir, artifact, "biz")
+            if layout_mode == "future-layout":
+                ensure_future_module_aggregate_pom(backend_root, settings["module"], [target_dir])
+                ensure_root_module_declared(backend_root, f"modules/custom/{settings['module']}")
+            else:
+                ensure_root_module_declared(backend_root, pom_module_path(backend_root, target_dir))
+            ensure_server_dependency(backend_root, artifact, layout_mode)
+            backend_modules.append(pom_module_path(backend_root, target_dir) if layout_mode == "future-layout" else artifact)
+            split_results.append(
+                {
+                    "module": settings["module"],
+                    "source": module_name,
+                    "mode": "disabled",
+                    "layout_mode": layout_mode,
+                    "artifact": artifact,
+                    "target_path": pom_module_path(backend_root, target_dir),
+                }
+            )
+            print(f"Synced backend module {module_name} -> {target_dir}")
             continue
 
-        api_module_name = f"{module_name}-api"
-        biz_module_name = f"{module_name}-biz"
-        api_dir = backend_root / api_module_name
-        biz_dir = backend_root / biz_module_name
+        api_artifact = target_module_artifact(module_name, "api", layout_mode)
+        biz_artifact = target_module_artifact(module_name, "biz", layout_mode)
+        api_dir = target_module_dir(backend_root, module_name, "api", layout_mode)
+        biz_dir = target_module_dir(backend_root, module_name, "biz", layout_mode)
         api_dir.mkdir(parents=True, exist_ok=True)
         biz_dir.mkdir(parents=True, exist_ok=True)
 
         api_files, biz_files = classify_module_files(module_dir, settings)
         copy_selected_files(module_dir, api_dir, api_files)
         copy_selected_files(module_dir, biz_dir, biz_files)
-        ensure_split_module_pom(backend_root, api_module_name, "api")
-        ensure_split_module_pom(backend_root, biz_module_name, "biz", api_module_name=api_module_name)
-        ensure_root_module_declared(backend_root, api_module_name)
-        ensure_root_module_declared(backend_root, biz_module_name)
-        ensure_server_dependency(backend_root, biz_module_name)
+        ensure_split_module_pom(api_dir, api_artifact, "api")
+        ensure_split_module_pom(biz_dir, biz_artifact, "biz", api_artifact_id=api_artifact)
+        if layout_mode == "future-layout":
+            ensure_future_module_aggregate_pom(backend_root, settings["module"], [api_dir, biz_dir])
+            ensure_root_module_declared(backend_root, f"modules/custom/{settings['module']}")
+        else:
+            ensure_root_module_declared(backend_root, pom_module_path(backend_root, api_dir))
+            ensure_root_module_declared(backend_root, pom_module_path(backend_root, biz_dir))
+        ensure_server_dependency(backend_root, biz_artifact, layout_mode)
 
-        backend_modules.extend([api_module_name, biz_module_name])
+        api_output = pom_module_path(backend_root, api_dir) if layout_mode == "future-layout" else api_artifact
+        biz_output = pom_module_path(backend_root, biz_dir) if layout_mode == "future-layout" else biz_artifact
+        backend_modules.extend([api_output, biz_output])
         split_results.append(
             {
                 "module": settings["module"],
                 "source": module_name,
                 "mode": "split",
-                "api_module": api_module_name,
-                "biz_module": biz_module_name,
+                "layout_mode": layout_mode,
+                "api_module": api_artifact,
+                "biz_module": biz_artifact,
+                "api_target_path": pom_module_path(backend_root, api_dir),
+                "biz_target_path": pom_module_path(backend_root, biz_dir),
                 "api_packages": settings["api_packages"],
                 "biz_packages": settings["biz_packages"],
                 "api_file_count": len(api_files),
                 "biz_file_count": len(biz_files),
             }
         )
-        print(f"Split backend module {module_name} -> {api_module_name}, {biz_module_name}")
+        print(f"Split backend module {module_name} -> {api_dir}, {biz_dir}")
 
     return backend_modules, split_results
-
 
 def copy_file(src: Path, dst: Path) -> None:
     if not src.exists():
@@ -443,10 +554,11 @@ def build_manifest(
     split_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": args.publish_mode,
         "repo_kind": repo_kind,
+        "layout_mode": args.layout_mode,
         "source": {
             "engine_repo": os.getenv("CODEGEN_ENGINE_REPO", "YunaiV/ruoyi-vue-pro"),
             "engine_ref": os.getenv("CODEGEN_ENGINE_REF", "master-jdk17"),
@@ -485,6 +597,7 @@ def build_manifest(
             "Confirm generated frontend routes, menus, and permissions.",
             "Confirm api/biz split files landed in the expected module.",
             "Confirm module POMs and aggregator POMs are correct.",
+            "Confirm generated modules landed in the selected layout mode.",
             "Run target backend/frontend builds before merge or release.",
         ],
     }
@@ -553,6 +666,7 @@ def main() -> None:
     parser.add_argument("--backend-branch", default="master-jdk17")
     parser.add_argument("--frontend-branch", default="master")
     parser.add_argument("--split-config", default="")
+    parser.add_argument("--layout-mode", default=os.getenv("LAYOUT_MODE", "yudao-upstream"), choices=["yudao-upstream", "future-layout"])
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[2]
@@ -570,7 +684,7 @@ def main() -> None:
         raise FileNotFoundError(f"frontend root not found: {frontend_root}")
 
     frontend_dirs = sync_frontend(generated_dir, frontend_root)
-    backend_modules, split_results = sync_backend(generated_dir, backend_root, split_config)
+    backend_modules, split_results = sync_backend(generated_dir, backend_root, split_config, args.layout_mode)
     sync_workflow_templates(project_root, backend_root, frontend_root)
 
     backend_manifest = build_manifest(

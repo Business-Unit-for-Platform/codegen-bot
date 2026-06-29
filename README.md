@@ -127,12 +127,57 @@ bash tools/codegen/publish.sh
 - `backend_branch`
 - `frontend_branch`
 - `publish_mode`
+- `layout_mode`
 - `target_private`
 - `codegen_engine_repo`
 - `codegen_engine_ref`
 - `codegen_modules`
 - `codegen_module_name`
 - `codegen_table_prefix`
+
+## 输出布局
+
+`tools/codegen/publish.sh` 支持两个后端输出布局。
+
+### yudao-upstream
+
+默认布局，保持上游 Yudao 形态：
+
+```bash
+LAYOUT_MODE=yudao-upstream \
+bash tools/codegen/publish.sh
+```
+
+拆分后输出：
+
+```text
+yudao-module-<module>-api
+yudao-module-<module>-biz
+```
+
+### future-layout
+
+Future 平台布局，用于对接 `Clone-ruoyi-vue-pro-Bot` 生成的项目结构：
+
+```bash
+LAYOUT_MODE=future-layout \
+bash tools/codegen/publish.sh
+```
+
+拆分后输出：
+
+```text
+modules/custom/<module>/future-module-<module>-api
+modules/custom/<module>/future-module-<module>-biz
+```
+
+同步时会自动：
+
+- 在 `modules/custom/<module>/pom.xml` 生成聚合 POM。
+- 在根 `pom.xml` 中加入 `modules/custom/<module>` 聚合模块。
+- 在 `modules/custom/<module>/pom.xml` 中加入 `future-module-<module>-api` 和 `future-module-<module>-biz`。
+- 在 `apps/future-server/pom.xml` 中加入 `future-module-<module>-biz` 依赖。
+- manifest/report 记录 `layout_mode`、目标 artifact 和目标路径。
 
 ## api/biz 拆分配置
 
@@ -182,7 +227,7 @@ split_api_biz:
 - Java 包路径中位于 `module/<module>/api`、`module/<module>/enums` 下的文件进入 `api` 模块。
 - 其他文件默认进入 `biz` 模块。
 - `biz` 模块自动依赖对应 `api` 模块。
-- `yudao-server/pom.xml` 只依赖 `biz` 模块。
+- `yudao-server/pom.xml` 或 `apps/future-server/pom.xml` 只依赖 `biz` 模块。
 - 根 `pom.xml` 会加入 `api` 和 `biz` 两个模块。
 - manifest/report 会记录拆分结果、规则和文件数量。
 
@@ -208,6 +253,6 @@ split_api_biz:
 
 ## 当前限制
 
-- 当前仍主要输出上游 Yudao 结构：`yudao-module-<module>`、`src/api/<module>`、`src/views/<module>`。
-- 还未实现 `future-layout`：`modules/custom/<module>/future-module-<module>-api` + `future-module-<module>-biz`。
+- `future-layout` 已支持后端模块落位到 `modules/custom/<module>/future-module-<module>-api` 和 `future-module-<module>-biz`。
+- 前端仍输出上游 Vue3 结构：`src/api/<module>`、`src/views/<module>`。
 - app controller 自动生成只能作为起点，不能直接视为可上线接口。

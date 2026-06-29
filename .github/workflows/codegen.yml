@@ -31,6 +31,14 @@ on:
         options:
           - update_existing_repo_with_pr
           - rebuild_from_upstream
+      layout_mode:
+        description: "Backend output layout"
+        required: true
+        type: choice
+        default: "yudao-upstream"
+        options:
+          - yudao-upstream
+          - future-layout
       target_private:
         description: "Create rebuilt target repos as private when publish_mode=rebuild_from_upstream"
         required: true
@@ -82,6 +90,7 @@ jobs:
       BACKEND_BRANCH: ${{ github.event.inputs.backend_branch || 'master-jdk17' }}
       FRONTEND_BRANCH: ${{ github.event.inputs.frontend_branch || 'master' }}
       PUBLISH_MODE: ${{ github.event.inputs.publish_mode || 'update_existing_repo_with_pr' }}
+      LAYOUT_MODE: ${{ github.event.inputs.layout_mode || 'yudao-upstream' }}
       TARGET_PRIVATE: ${{ github.event.inputs.target_private || 'false' }}
       CODEGEN_ENGINE_REPO: ${{ github.event.inputs.codegen_engine_repo || 'YunaiV/ruoyi-vue-pro' }}
       CODEGEN_ENGINE_REF: ${{ github.event.inputs.codegen_engine_ref || 'master-jdk17' }}
@@ -156,6 +165,7 @@ jobs:
           echo "BACKEND_BRANCH=${BACKEND_BRANCH}"
           echo "FRONTEND_BRANCH=${FRONTEND_BRANCH}"
           echo "PUBLISH_MODE=${PUBLISH_MODE}"
+          echo "LAYOUT_MODE=${LAYOUT_MODE}"
           echo "CODEGEN_ENGINE_REPO=${CODEGEN_ENGINE_REPO}"
           echo "CODEGEN_ENGINE_REF=${CODEGEN_ENGINE_REF}"
           echo "== top level =="
@@ -259,6 +269,7 @@ jobs:
           BACKEND_BRANCH: ${{ env.BACKEND_BRANCH }}
           FRONTEND_BRANCH: ${{ env.FRONTEND_BRANCH }}
           PUBLISH_MODE: ${{ env.PUBLISH_MODE }}
+          LAYOUT_MODE: ${{ env.LAYOUT_MODE }}
           TARGET_PRIVATE: ${{ env.TARGET_PRIVATE }}
         run: |
           set -x

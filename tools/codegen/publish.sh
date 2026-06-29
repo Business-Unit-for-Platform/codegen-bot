@@ -178,7 +178,8 @@ sync_generated_code() {
     --frontend-repo "${FRONTEND_REPO}" \
     --backend-branch "${BACKEND_BRANCH}" \
     --frontend-branch "${FRONTEND_BRANCH}" \
-    --split-config "${SPLIT_API_BIZ_CONFIG:-${ROOT}/tools/codegen/split_api_biz.yml}"
+    --split-config "${SPLIT_API_BIZ_CONFIG:-${ROOT}/tools/codegen/split_api_biz.yml}" \
+    --layout-mode "${LAYOUT_MODE:-yudao-upstream}"
 }
 
 commit_and_push() {
