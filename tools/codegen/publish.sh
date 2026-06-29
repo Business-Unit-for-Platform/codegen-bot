@@ -2,20 +2,23 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUT_DIR="${ROOT}/out/generated"
+OUT_DIR="${CODEGEN_OUTPUT_DIR:-${ROOT}/out/generated}"
 WORK_DIR="${ROOT}/out/publish"
 
 OWNER="${GITHUB_OWNER:-FutureTechQuant}"
-BACKEND_REPO="ruoyi-vue-pro"
-FRONTEND_REPO="yudao-ui-admin-vue3"
+BACKEND_REPO="${BACKEND_REPO:-ruoyi-vue-pro}"
+FRONTEND_REPO="${FRONTEND_REPO:-yudao-ui-admin-vue3}"
 BACKEND_BRANCH="${BACKEND_BRANCH:-master-jdk17}"
+FRONTEND_BRANCH="${FRONTEND_BRANCH:-master}"
+PUBLISH_MODE="${PUBLISH_MODE:-update_existing_repo_with_pr}"
+PR_BRANCH_PREFIX="${PR_BRANCH_PREFIX:-codegen}"
+TARGET_PRIVATE="${TARGET_PRIVATE:-false}"
 
-# Gitee 源仓库（代码来源）
-GITEE_BACKEND_URL="https://gitee.com/zhijiantianya/ruoyi-vue-pro.git"
-GITEE_BACKEND_BRANCH="master-jdk17"
-
-GITEE_FRONTEND_URL="https://gitee.com/yudaocode/yudao-ui-admin-vue3.git"
-GITEE_FRONTEND_BRANCH="master"
+# Source repositories used when explicitly rebuilding disposable/generated targets.
+GITEE_BACKEND_URL="${GITEE_BACKEND_URL:-https://gitee.com/zhijiantianya/ruoyi-vue-pro.git}"
+GITEE_BACKEND_BRANCH="${GITEE_BACKEND_BRANCH:-master-jdk17}"
+GITEE_FRONTEND_URL="${GITEE_FRONTEND_URL:-https://gitee.com/yudaocode/yudao-ui-admin-vue3.git}"
+GITEE_FRONTEND_BRANCH="${GITEE_FRONTEND_BRANCH:-master}"
 
 require_env() {
   local name="$1"
@@ -30,39 +33,55 @@ repo_url() {
   echo "https://x-access-token:${GH_TOKEN}@github.com/${OWNER}/${repo}.git"
 }
 
+api_auth_header() {
+  printf '%s' "Authorization: Bearer ${GH_TOKEN}"
+}
+
+repo_exists() {
+  local repo="$1"
+  local status
+  status=$(curl -sS -o /dev/null -w "%{http_code}" \
+    -H "$(api_auth_header)" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${OWNER}/${repo}")
+  [[ "${status}" == "200" ]]
+}
+
 delete_repo_if_exists() {
   local repo="$1"
-  local token="${GH_TOKEN}"
-  local owner="${OWNER}"
-  local url="https://api.github.com/repos/${owner}/${repo}"
+  local url="https://api.github.com/repos/${OWNER}/${repo}"
+  local status del_status
 
-  echo "==> Check & delete repo if exists: ${owner}/${repo}"
+  echo "==> Check repo before rebuild: ${OWNER}/${repo}"
   status=$(curl -sS -o /dev/null -w "%{http_code}" \
-    -H "Authorization: Bearer ${token}" \
+    -H "$(api_auth_header)" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "${url}")
 
   if [[ "${status}" == "404" ]]; then
-    echo "Repo ${owner}/${repo} not found, skip delete"
+    echo "Repo ${OWNER}/${repo} not found, skip delete"
     return
   fi
 
   if [[ "${status}" != "200" ]]; then
-    echo "WARN: unexpected status when getting ${owner}/${repo}: ${status}"
+    echo "ERROR: unexpected status when getting ${OWNER}/${repo}: ${status}"
+    exit 1
   fi
 
+  echo "==> Delete existing repo for rebuild_from_upstream: ${OWNER}/${repo}"
   del_status=$(curl -sS -o /dev/null -w "%{http_code}" \
     -X DELETE \
-    -H "Authorization: Bearer ${token}" \
+    -H "$(api_auth_header)" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "${url}")
 
   if [[ "${del_status}" == "204" ]]; then
-    echo "Deleted repo ${owner}/${repo}"
+    echo "Deleted repo ${OWNER}/${repo}"
   else
-    echo "ERROR: failed to delete ${owner}/${repo}, status=${del_status}"
+    echo "ERROR: failed to delete ${OWNER}/${repo}, status=${del_status}"
     exit 1
   fi
 }
@@ -70,12 +89,10 @@ delete_repo_if_exists() {
 create_repo() {
   local repo="$1"
   local description="$2"
-  local private_flag="$3" # true / false
+  local private_flag="${3:-${TARGET_PRIVATE}}"
+  local payload create_status
 
-  local token="${GH_TOKEN}"
-  local owner="${OWNER}"
-
-  echo "==> Create repo ${owner}/${repo}"
+  echo "==> Create repo ${OWNER}/${repo}"
   payload=$(jq -n \
     --arg name "${repo}" \
     --arg desc "${description}" \
@@ -84,23 +101,22 @@ create_repo() {
 
   create_status=$(curl -sS -o /tmp/create-"${repo}".json -w "%{http_code}" \
     -X POST \
-    -H "Authorization: Bearer ${token}" \
+    -H "$(api_auth_header)" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     -H "Content-Type: application/json" \
     -d "${payload}" \
-    "https://api.github.com/orgs/${owner}/repos")
+    "https://api.github.com/orgs/${OWNER}/repos")
 
   if [[ "${create_status}" != "201" ]]; then
-    echo "ERROR: failed to create repo ${owner}/${repo}, status=${create_status}"
+    echo "ERROR: failed to create repo ${OWNER}/${repo}, status=${create_status}"
     cat /tmp/create-"${repo}".json || true
     exit 1
   fi
 
-  echo "Created repo ${owner}/${repo}"
+  echo "Created repo ${OWNER}/${repo}"
 }
 
-# 从 Gitee 拉指定分支的工作区快照，作为 GitHub 仓库的初始内容
 bootstrap_repo_from_gitee() {
   local repo="$1"
   local gitee_url="$2"
@@ -115,15 +131,8 @@ bootstrap_repo_from_gitee() {
 
   echo "==> Shallow clone from Gitee: ${gitee_url} (branch ${gitee_branch})"
   git clone --depth 1 --branch "${gitee_branch}" "${gitee_url}" "${tmp_work}"
-
-  # 可选：这里可以删除超大文件，避免推到 GitHub。
-  # 例如：
-  # rm -f "${tmp_work}/yudao-admin-ui/src/assets/icons/svg/Mockitt-win32-x64-zh-1.1.7.exe"
-
-  # 删掉 Gitee 的 .git，只保留工作区文件
   rm -rf "${tmp_work}/.git"
 
-  # 在 tmp_init 里初始化一个新的 Git 仓库，分支名直接用 gitee_branch
   echo "==> Prepare initial Git history for ${repo}"
   cp -R "${tmp_work}/." "${tmp_init}/"
 
@@ -132,8 +141,7 @@ bootstrap_repo_from_gitee() {
   git add -A
   git commit -m "chore: bootstrap from Gitee ${gitee_branch}"
 
-  # 创建 GitHub 仓库
-  create_repo "${repo}" "${description}" false
+  create_repo "${repo}" "${description}" "${TARGET_PRIVATE}"
 
   git remote add origin "$(repo_url "${repo}")"
   echo "==> Push initial snapshot to GitHub ${OWNER}/${repo} (${gitee_branch})"
@@ -147,72 +155,184 @@ clone_target() {
 
   rm -rf "${dir}"
 
-  if [[ -n "${branch}" ]]; then
-    # 先检测远端是否有指定分支
-    if git ls-remote --heads "$(repo_url "${repo}")" "${branch}" >/dev/null 2>&1; then
-      echo "Cloning ${repo} branch ${branch}"
-      git clone --branch "${branch}" --single-branch "$(repo_url "${repo}")" "${dir}"
-    else
-      echo "Branch ${branch} not found in ${repo}, cloning default branch"
-      git clone "$(repo_url "${repo}")" "${dir}"
-    fi
+  if [[ -n "${branch}" ]] && git ls-remote --heads "$(repo_url "${repo}")" "${branch}" | grep -q "refs/heads/${branch}"; then
+    echo "Cloning ${repo} branch ${branch}"
+    git clone --branch "${branch}" --single-branch "$(repo_url "${repo}")" "${dir}"
   else
     echo "Cloning ${repo} default branch"
     git clone "$(repo_url "${repo}")" "${dir}"
   fi
 }
 
+sync_generated_code() {
+  local backend_dir="$1"
+  local frontend_dir="$2"
+
+  python3 "${ROOT}/tools/codegen/publish_sync.py" \
+    --generated-dir "${OUT_DIR}" \
+    --backend-root "${backend_dir}" \
+    --frontend-root "${frontend_dir}" \
+    --publish-mode "${PUBLISH_MODE}" \
+    --target-owner "${OWNER}" \
+    --backend-repo "${BACKEND_REPO}" \
+    --frontend-repo "${FRONTEND_REPO}" \
+    --backend-branch "${BACKEND_BRANCH}" \
+    --frontend-branch "${FRONTEND_BRANCH}"
+}
+
 commit_and_push() {
   local dir="$1"
   local msg="$2"
-  local branch="${3:-}"
+  local branch="$3"
 
   cd "${dir}"
   git add -A
 
   if git diff --cached --quiet; then
     echo "No changes: ${dir}"
-    return
+    return 1
   fi
 
   git commit -m "${msg}"
+  git push -u origin "HEAD:${branch}"
+}
 
-  if [[ -n "${branch}" ]]; then
-    git push -u origin "HEAD:${branch}"
-  else
-    git push origin HEAD
+create_pr_if_possible() {
+  local repo="$1"
+  local head_branch="$2"
+  local base_branch="$3"
+  local title="$4"
+  local body_file="$5"
+
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "WARN: gh not found; pushed branch ${head_branch} but did not create PR for ${OWNER}/${repo}"
+    return 0
   fi
+
+  echo "==> Create or reuse PR for ${OWNER}/${repo}: ${head_branch} -> ${base_branch}"
+  if gh pr list \
+      --repo "${OWNER}/${repo}" \
+      --head "${head_branch}" \
+      --base "${base_branch}" \
+      --json number \
+      --jq '.[0].number // empty' | grep -q '^[0-9]'; then
+    echo "PR already exists for ${OWNER}/${repo}:${head_branch}"
+    return 0
+  fi
+
+  gh pr create \
+    --repo "${OWNER}/${repo}" \
+    --head "${head_branch}" \
+    --base "${base_branch}" \
+    --title "${title}" \
+    --body-file "${body_file}"
+}
+
+write_pr_body() {
+  local file="$1"
+  cat > "${file}" <<EOF
+## Summary
+
+Sync generated RuoYi/Yudao code from codegen-bot.
+
+## Mode
+
+\`${PUBLISH_MODE}\`
+
+## Review checklist
+
+- [ ] Confirm generated backend module boundaries.
+- [ ] Confirm generated frontend pages/routes/permissions.
+- [ ] Review app/user controllers for unsafe admin API exposure.
+- [ ] Review tenant/user/data-permission boundaries.
+- [ ] Confirm generated manifest/report are accurate.
+- [ ] Run relevant backend/frontend builds in the target repositories.
+
+## Generated artifacts
+
+- \`generated/manifest.json\`
+- \`generated/codegen-report.md\`
+EOF
+}
+
+validate_mode() {
+  case "${PUBLISH_MODE}" in
+    rebuild_from_upstream|update_existing_repo_with_pr) ;;
+    *)
+      echo "ERROR: unsupported PUBLISH_MODE=${PUBLISH_MODE}; expected rebuild_from_upstream or update_existing_repo_with_pr"
+      exit 1
+      ;;
+  esac
 }
 
 git config --global user.name "future-codegen-bot"
 git config --global user.email "actions@users.noreply.github.com"
 
 require_env GH_TOKEN
+validate_mode
 mkdir -p "${WORK_DIR}"
 
 BACKEND_DIR="${WORK_DIR}/${BACKEND_REPO}"
 FRONTEND_DIR="${WORK_DIR}/${FRONTEND_REPO}"
 
-echo "==> Delete existing GitHub repos if any"
-delete_repo_if_exists "${BACKEND_REPO}"
-delete_repo_if_exists "${FRONTEND_REPO}"
+case "${PUBLISH_MODE}" in
+  rebuild_from_upstream)
+    echo "==> Publish mode: rebuild_from_upstream"
+    echo "==> Delete existing GitHub repos if any"
+    delete_repo_if_exists "${BACKEND_REPO}"
+    delete_repo_if_exists "${FRONTEND_REPO}"
 
-echo "==> Bootstrap new repos from Gitee working tree"
-bootstrap_repo_from_gitee "${BACKEND_REPO}" "${GITEE_BACKEND_URL}" "${GITEE_BACKEND_BRANCH}" "Backend repo synced from Gitee branch ${GITEE_BACKEND_BRANCH} + codegen"
-bootstrap_repo_from_gitee "${FRONTEND_REPO}" "${GITEE_FRONTEND_URL}" "${GITEE_FRONTEND_BRANCH}" "Frontend repo synced from Gitee branch ${GITEE_FRONTEND_BRANCH} + codegen"
+    echo "==> Bootstrap new repos from Gitee working tree"
+    bootstrap_repo_from_gitee "${BACKEND_REPO}" "${GITEE_BACKEND_URL}" "${GITEE_BACKEND_BRANCH}" "Backend repo synced from Gitee branch ${GITEE_BACKEND_BRANCH} + codegen"
+    bootstrap_repo_from_gitee "${FRONTEND_REPO}" "${GITEE_FRONTEND_URL}" "${GITEE_FRONTEND_BRANCH}" "Frontend repo synced from Gitee branch ${GITEE_FRONTEND_BRANCH} + codegen"
 
-echo "==> Clone recreated GitHub repos"
-clone_target "${BACKEND_REPO}" "${BACKEND_DIR}" "${BACKEND_BRANCH}"
-clone_target "${FRONTEND_REPO}" "${FRONTEND_DIR}"
+    echo "==> Clone recreated GitHub repos"
+    clone_target "${BACKEND_REPO}" "${BACKEND_DIR}" "${BACKEND_BRANCH}"
+    clone_target "${FRONTEND_REPO}" "${FRONTEND_DIR}" "${FRONTEND_BRANCH}"
 
-echo "==> Sync generated code into GitHub repos"
-python3 "${ROOT}/tools/codegen/publish_sync.py" \
-  --generated-dir "${OUT_DIR}" \
-  --backend-root "${BACKEND_DIR}" \
-  --frontend-root "${FRONTEND_DIR}"
+    echo "==> Sync generated code into GitHub repos"
+    sync_generated_code "${BACKEND_DIR}" "${FRONTEND_DIR}"
 
-echo "==> Commit and push"
-commit_and_push "${BACKEND_DIR}" "chore: sync generated backend code" "${BACKEND_BRANCH}"
-commit_and_push "${FRONTEND_DIR}" "chore: sync generated frontend code"
+    echo "==> Commit and push generated code"
+    commit_and_push "${BACKEND_DIR}" "chore: sync generated backend code" "${BACKEND_BRANCH}" || true
+    commit_and_push "${FRONTEND_DIR}" "chore: sync generated frontend code" "${FRONTEND_BRANCH}" || true
+    ;;
+
+  update_existing_repo_with_pr)
+    echo "==> Publish mode: update_existing_repo_with_pr"
+    if ! repo_exists "${BACKEND_REPO}"; then
+      echo "ERROR: backend repo ${OWNER}/${BACKEND_REPO} does not exist. Use rebuild_from_upstream for disposable/generated rebuilds."
+      exit 1
+    fi
+    if ! repo_exists "${FRONTEND_REPO}"; then
+      echo "ERROR: frontend repo ${OWNER}/${FRONTEND_REPO} does not exist. Use rebuild_from_upstream for disposable/generated rebuilds."
+      exit 1
+    fi
+
+    clone_target "${BACKEND_REPO}" "${BACKEND_DIR}" "${BACKEND_BRANCH}"
+    clone_target "${FRONTEND_REPO}" "${FRONTEND_DIR}" "${FRONTEND_BRANCH}"
+
+    ts="$(date -u +%Y%m%d%H%M%S)"
+    BACKEND_PR_BRANCH="${PR_BRANCH_PREFIX}/backend-${ts}"
+    FRONTEND_PR_BRANCH="${PR_BRANCH_PREFIX}/frontend-${ts}"
+
+    (cd "${BACKEND_DIR}" && git checkout -B "${BACKEND_PR_BRANCH}")
+    (cd "${FRONTEND_DIR}" && git checkout -B "${FRONTEND_PR_BRANCH}")
+
+    echo "==> Sync generated code into existing repos"
+    sync_generated_code "${BACKEND_DIR}" "${FRONTEND_DIR}"
+
+    body_file="${WORK_DIR}/codegen-pr-body.md"
+    write_pr_body "${body_file}"
+
+    if commit_and_push "${BACKEND_DIR}" "chore: sync generated backend code" "${BACKEND_PR_BRANCH}"; then
+      create_pr_if_possible "${BACKEND_REPO}" "${BACKEND_PR_BRANCH}" "${BACKEND_BRANCH}" "chore: sync generated backend code" "${body_file}"
+    fi
+
+    if commit_and_push "${FRONTEND_DIR}" "chore: sync generated frontend code" "${FRONTEND_PR_BRANCH}"; then
+      create_pr_if_possible "${FRONTEND_REPO}" "${FRONTEND_PR_BRANCH}" "${FRONTEND_BRANCH}" "chore: sync generated frontend code" "${body_file}"
+    fi
+    ;;
+esac
 
 echo "Done"

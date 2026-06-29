@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -46,11 +48,11 @@ def ensure_module_pom(backend_root: Path, module_name: str) -> None:
     content = content.replace("yudao-module-member", module_name)
     content = content.replace(
         "member 模块，我们放会员业务。",
-        f"{module_name.removeprefix('yudao-module-')} 模块，自动生成。"
+        f"{module_name.removeprefix('yudao-module-')} 模块，自动生成。",
     )
     content = content.replace(
         "例如说：会员中心等等",
-        f"例如说：{module_name.removeprefix('yudao-module-')} 业务。"
+        f"例如说：{module_name.removeprefix('yudao-module-')} 业务。",
     )
     target_pom.write_text(content, encoding="utf-8")
 
@@ -165,17 +167,113 @@ def sync_workflow_templates(project_root: Path, backend_root: Path, frontend_roo
     print(f"Synced frontend workflow from {frontend_template}")
 
 
-def write_manifest(repo_root: Path, frontend_dirs: list[str], backend_modules: list[str]) -> None:
-    manifest = {
-        "frontend_dirs": frontend_dirs,
-        "backend_modules": backend_modules,
+def rel_files(root: Path, limit: int = 2000) -> list[str]:
+    files: list[str] = []
+    for p in sorted(root.rglob("*")):
+        if p.is_file() and ".git" not in p.parts:
+            files.append(str(p.relative_to(root)))
+            if len(files) >= limit:
+                files.append(f"... truncated after {limit} files")
+                break
+    return files
+
+
+def build_manifest(
+    *,
+    args: argparse.Namespace,
+    repo_kind: str,
+    repo_root: Path,
+    frontend_dirs: list[str],
+    backend_modules: list[str],
+) -> dict:
+    return {
+        "schema_version": "1.0",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": args.publish_mode,
+        "repo_kind": repo_kind,
+        "source": {
+            "engine_repo": os.getenv("CODEGEN_ENGINE_REPO", "YunaiV/ruoyi-vue-pro"),
+            "engine_ref": os.getenv("CODEGEN_ENGINE_REF", "master-jdk17"),
+        },
+        "generator": {
+            "repo": os.getenv("GITHUB_REPOSITORY", "FutureTechQuant/codegen-bot"),
+            "commit": os.getenv("GITHUB_SHA", ""),
+            "workflow": os.getenv("GITHUB_WORKFLOW", ""),
+            "run_id": os.getenv("GITHUB_RUN_ID", ""),
+        },
+        "target": {
+            "owner": args.target_owner,
+            "backend_repo": args.backend_repo,
+            "frontend_repo": args.frontend_repo,
+            "backend_branch": args.backend_branch,
+            "frontend_branch": args.frontend_branch,
+        },
+        "codegen": {
+            "modules_env": os.getenv("CODEGEN_MODULES", ""),
+            "module_name_env": os.getenv("CODEGEN_MODULE_NAME", ""),
+            "table_prefix_env": os.getenv("CODEGEN_TABLE_PREFIX", ""),
+            "base_package": os.getenv("CODEGEN_BASE_PACKAGE", "cn.iocoder.yudao"),
+        },
+        "outputs": {
+            "frontend_dirs": frontend_dirs,
+            "backend_modules": backend_modules,
+            "files_sample": rel_files(repo_root),
+        },
+        "manual_review_checklist": [
+            "Review generated app/user controllers for unsafe admin API exposure.",
+            "Review tenant/user/data-permission boundaries.",
+            "Confirm generated frontend routes, menus, and permissions.",
+            "Confirm module POMs and aggregator POMs are correct.",
+            "Run target backend/frontend builds before merge or release.",
+        ],
     }
-    manifest_path = repo_root / "generated-manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(f"Wrote manifest to {manifest_path}")
+
+
+def write_manifest(repo_root: Path, manifest: dict) -> None:
+    generated_dir = repo_root / "generated"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = generated_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    # Backward-compatible location for existing consumers.
+    legacy_path = repo_root / "generated-manifest.json"
+    legacy_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    print(f"Wrote manifest to {manifest_path} and {legacy_path}")
+
+
+def write_report(repo_root: Path, manifest: dict) -> None:
+    generated_dir = repo_root / "generated"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    report_path = generated_dir / "codegen-report.md"
+    outputs = manifest["outputs"]
+    target = manifest["target"]
+    lines = [
+        "# Codegen Report",
+        "",
+        f"- Generated at: `{manifest['generated_at']}`",
+        f"- Mode: `{manifest['mode']}`",
+        f"- Generator: `{manifest['generator']['repo']}` @ `{manifest['generator']['commit']}`",
+        f"- Engine: `{manifest['source']['engine_repo']}` @ `{manifest['source']['engine_ref']}`",
+        f"- Target owner: `{target['owner']}`",
+        f"- Backend repo: `{target['backend_repo']}` / branch `{target['backend_branch']}`",
+        f"- Frontend repo: `{target['frontend_repo']}` / branch `{target['frontend_branch']}`",
+        "",
+        "## Backend modules",
+        "",
+        *(f"- `{m}`" for m in outputs["backend_modules"]),
+        "",
+        "## Frontend directories",
+        "",
+        *(f"- `{d}`" for d in outputs["frontend_dirs"]),
+        "",
+        "## Manual review checklist",
+        "",
+        *(f"- [ ] {item}" for item in manifest["manual_review_checklist"]),
+        "",
+    ]
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Wrote report to {report_path}")
 
 
 def main() -> None:
@@ -183,6 +281,12 @@ def main() -> None:
     parser.add_argument("--generated-dir", required=True)
     parser.add_argument("--backend-root", required=True)
     parser.add_argument("--frontend-root", required=True)
+    parser.add_argument("--publish-mode", default="update_existing_repo_with_pr")
+    parser.add_argument("--target-owner", default="FutureTechQuant")
+    parser.add_argument("--backend-repo", default="ruoyi-vue-pro")
+    parser.add_argument("--frontend-repo", default="yudao-ui-admin-vue3")
+    parser.add_argument("--backend-branch", default="master-jdk17")
+    parser.add_argument("--frontend-branch", default="master")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[2]
@@ -201,8 +305,25 @@ def main() -> None:
     backend_modules = sync_backend(generated_dir, backend_root)
     sync_workflow_templates(project_root, backend_root, frontend_root)
 
-    write_manifest(frontend_root, frontend_dirs, backend_modules)
-    write_manifest(backend_root, frontend_dirs, backend_modules)
+    backend_manifest = build_manifest(
+        args=args,
+        repo_kind="backend",
+        repo_root=backend_root,
+        frontend_dirs=frontend_dirs,
+        backend_modules=backend_modules,
+    )
+    frontend_manifest = build_manifest(
+        args=args,
+        repo_kind="frontend",
+        repo_root=frontend_root,
+        frontend_dirs=frontend_dirs,
+        backend_modules=backend_modules,
+    )
+
+    write_manifest(backend_root, backend_manifest)
+    write_report(backend_root, backend_manifest)
+    write_manifest(frontend_root, frontend_manifest)
+    write_report(frontend_root, frontend_manifest)
 
 
 if __name__ == "__main__":

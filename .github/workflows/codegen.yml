@@ -2,6 +2,60 @@ name: codegen
 
 on:
   workflow_dispatch:
+    inputs:
+      target_owner:
+        description: "Target GitHub owner/org"
+        required: true
+        default: "FutureTechQuant"
+      backend_repo:
+        description: "Target backend repository"
+        required: true
+        default: "ruoyi-vue-pro"
+      frontend_repo:
+        description: "Target frontend repository"
+        required: true
+        default: "yudao-ui-admin-vue3"
+      backend_branch:
+        description: "Backend base branch"
+        required: true
+        default: "master-jdk17"
+      frontend_branch:
+        description: "Frontend base branch"
+        required: true
+        default: "master"
+      publish_mode:
+        description: "Publish mode"
+        required: true
+        type: choice
+        default: "update_existing_repo_with_pr"
+        options:
+          - update_existing_repo_with_pr
+          - rebuild_from_upstream
+      target_private:
+        description: "Create rebuilt target repos as private when publish_mode=rebuild_from_upstream"
+        required: true
+        type: boolean
+        default: false
+      codegen_engine_repo:
+        description: "RuoYi/Yudao codegen engine repository"
+        required: true
+        default: "YunaiV/ruoyi-vue-pro"
+      codegen_engine_ref:
+        description: "RuoYi/Yudao codegen engine ref"
+        required: true
+        default: "master-jdk17"
+      codegen_modules:
+        description: "Optional multi-module spec, e.g. ticket:ticket_,map:map_"
+        required: false
+        default: ""
+      codegen_module_name:
+        description: "Optional single module name"
+        required: false
+        default: ""
+      codegen_table_prefix:
+        description: "Optional single module table prefix"
+        required: false
+        default: ""
   push:
     branches: [ master-jdk17 ]
     paths:
@@ -20,9 +74,17 @@ concurrency:
 jobs:
   gen:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      TARGET_OWNER: ${{ github.event.inputs.target_owner || 'FutureTechQuant' }}
+      BACKEND_REPO: ${{ github.event.inputs.backend_repo || 'ruoyi-vue-pro' }}
+      FRONTEND_REPO: ${{ github.event.inputs.frontend_repo || 'yudao-ui-admin-vue3' }}
+      BACKEND_BRANCH: ${{ github.event.inputs.backend_branch || 'master-jdk17' }}
+      FRONTEND_BRANCH: ${{ github.event.inputs.frontend_branch || 'master' }}
+      PUBLISH_MODE: ${{ github.event.inputs.publish_mode || 'update_existing_repo_with_pr' }}
+      TARGET_PRIVATE: ${{ github.event.inputs.target_private || 'false' }}
+      CODEGEN_ENGINE_REPO: ${{ github.event.inputs.codegen_engine_repo || 'YunaiV/ruoyi-vue-pro' }}
+      CODEGEN_ENGINE_REF: ${{ github.event.inputs.codegen_engine_ref || 'master-jdk17' }}
 
     services:
       mysql:
@@ -54,8 +116,8 @@ jobs:
       - name: Checkout ruoyi-vue-pro for codegen engine
         uses: actions/checkout@v5
         with:
-          repository: YunaiV/ruoyi-vue-pro
-          ref: master-jdk17
+          repository: ${{ env.CODEGEN_ENGINE_REPO }}
+          ref: ${{ env.CODEGEN_ENGINE_REF }}
           path: ruoyi
           fetch-depth: 1
 
@@ -70,7 +132,7 @@ jobs:
       - name: Install runtime tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y mysql-client python3 redis-tools git jq tree
+          sudo apt-get install -y mysql-client python3 redis-tools git jq tree gh
 
       - name: Debug workspace before run
         run: |
@@ -87,6 +149,15 @@ jobs:
           jq --version
           mysql --version
           redis-cli --version || true
+          echo "== codegen targets =="
+          echo "TARGET_OWNER=${TARGET_OWNER}"
+          echo "BACKEND_REPO=${BACKEND_REPO}"
+          echo "FRONTEND_REPO=${FRONTEND_REPO}"
+          echo "BACKEND_BRANCH=${BACKEND_BRANCH}"
+          echo "FRONTEND_BRANCH=${FRONTEND_BRANCH}"
+          echo "PUBLISH_MODE=${PUBLISH_MODE}"
+          echo "CODEGEN_ENGINE_REPO=${CODEGEN_ENGINE_REPO}"
+          echo "CODEGEN_ENGINE_REF=${CODEGEN_ENGINE_REF}"
           echo "== top level =="
           ls -la
           echo "== workspace tree depth 3 =="
@@ -127,7 +198,7 @@ jobs:
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FutureTechQuant
+          owner: ${{ env.TARGET_OWNER }}
 
       - name: Run codegen
         id: run-codegen
@@ -139,13 +210,11 @@ jobs:
           CODEGEN_DB_NAME: ruoyi-vue-pro
           CODEGEN_OUTPUT_DIR: ${{ github.workspace }}/out/generated
           CODEGEN_BASE_PACKAGE: cn.iocoder.yudao
+          CODEGEN_MODULES: ${{ github.event.inputs.codegen_modules || '' }}
+          CODEGEN_MODULE_NAME: ${{ github.event.inputs.codegen_module_name || '' }}
+          CODEGEN_TABLE_PREFIX: ${{ github.event.inputs.codegen_table_prefix || '' }}
           REDIS_HOST: 127.0.0.1
           REDIS_PORT: 6379
-          # 单模块生成：如需强制指定，可手工打开下面两行
-          # CODEGEN_MODULE_NAME: trade
-          # CODEGEN_TABLE_PREFIX: trade_
-          # 多模块生成：一次生成多个模块，格式 module:table_prefix
-          # CODEGEN_MODULES: ticket:ticket_,map:map_,ugc:ugc_,tourism:tourism_
         run: |
           set -x
           echo "CODEGEN_OUTPUT_DIR=${CODEGEN_OUTPUT_DIR}"
@@ -183,8 +252,14 @@ jobs:
         if: ${{ steps.run-codegen.conclusion == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GITHUB_OWNER: FutureTechQuant
-          BACKEND_BRANCH: master-jdk17
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_OWNER: ${{ env.TARGET_OWNER }}
+          BACKEND_REPO: ${{ env.BACKEND_REPO }}
+          FRONTEND_REPO: ${{ env.FRONTEND_REPO }}
+          BACKEND_BRANCH: ${{ env.BACKEND_BRANCH }}
+          FRONTEND_BRANCH: ${{ env.FRONTEND_BRANCH }}
+          PUBLISH_MODE: ${{ env.PUBLISH_MODE }}
+          TARGET_PRIVATE: ${{ env.TARGET_PRIVATE }}
         run: |
           set -x
           echo "== before publish =="
