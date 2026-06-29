@@ -134,6 +134,67 @@ bash tools/codegen/publish.sh
 - `codegen_module_name`
 - `codegen_table_prefix`
 
+## api/biz 拆分配置
+
+默认配置文件：
+
+```text
+tools/codegen/split_api_biz.yml
+```
+
+默认启用拆分：
+
+```yaml
+split_api_biz:
+  enabled: true
+  default: true
+  default_api_packages:
+    - api
+    - enums
+  default_biz_packages:
+    - controller
+    - service
+    - dal
+    - convert
+    - job
+    - listener
+    - framework
+  modules:
+    asset:
+      enabled: true
+      api_packages:
+        - api
+        - enums
+      biz_packages:
+        - controller
+        - service
+        - dal
+        - convert
+        - job
+        - listener
+```
+
+拆分规则：
+
+- 生成的 `yudao-module-<module>` 会被拆成：
+  - `yudao-module-<module>-api`
+  - `yudao-module-<module>-biz`
+- Java 包路径中位于 `module/<module>/api`、`module/<module>/enums` 下的文件进入 `api` 模块。
+- 其他文件默认进入 `biz` 模块。
+- `biz` 模块自动依赖对应 `api` 模块。
+- `yudao-server/pom.xml` 只依赖 `biz` 模块。
+- 根 `pom.xml` 会加入 `api` 和 `biz` 两个模块。
+- manifest/report 会记录拆分结果、规则和文件数量。
+
+如果某个模块暂时不拆，可以配置：
+
+```yaml
+split_api_biz:
+  modules:
+    asset:
+      enabled: false
+```
+
 ## 生成审查要求
 
 生成后必须人工或 Agent review：

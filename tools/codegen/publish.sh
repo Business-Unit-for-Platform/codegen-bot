@@ -177,7 +177,8 @@ sync_generated_code() {
     --backend-repo "${BACKEND_REPO}" \
     --frontend-repo "${FRONTEND_REPO}" \
     --backend-branch "${BACKEND_BRANCH}" \
-    --frontend-branch "${FRONTEND_BRANCH}"
+    --frontend-branch "${FRONTEND_BRANCH}" \
+    --split-config "${SPLIT_API_BIZ_CONFIG:-${ROOT}/tools/codegen/split_api_biz.yml}"
 }
 
 commit_and_push() {

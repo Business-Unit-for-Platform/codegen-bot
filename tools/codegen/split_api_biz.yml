@@ -1,0 +1,27 @@
+split_api_biz:
+  enabled: true
+  default: true
+  default_api_packages:
+    - api
+    - enums
+  default_biz_packages:
+    - controller
+    - service
+    - dal
+    - convert
+    - job
+    - listener
+    - framework
+  modules:
+    asset:
+      enabled: true
+      api_packages:
+        - api
+        - enums
+      biz_packages:
+        - controller
+        - service
+        - dal
+        - convert
+        - job
+        - listener

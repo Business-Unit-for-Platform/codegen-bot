@@ -4,9 +4,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 def copy_tree_contents(src: Path, dst: Path) -> None:
@@ -21,6 +23,14 @@ def copy_tree_contents(src: Path, dst: Path) -> None:
             shutil.copy2(item, target)
 
 
+def copy_selected_files(src_root: Path, dst_root: Path, rel_files: list[Path]) -> None:
+    for rel in rel_files:
+        src = src_root / rel
+        dst = dst_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+
 def find_frontend_src_dirs(generated_dir: Path) -> list[Path]:
     return [p for p in generated_dir.rglob("src") if p.parent.name == "yudao-ui-admin-vue3"]
 
@@ -32,6 +42,20 @@ def find_backend_modules(generated_dir: Path) -> list[Path]:
             modules.append(p)
     modules.sort()
     return modules
+
+
+def module_key(module_name: str) -> str:
+    name = module_name.removeprefix("yudao-module-")
+    name = name.removesuffix("-api").removesuffix("-biz")
+    return name
+
+
+def module_suffix(module_name: str) -> str | None:
+    if module_name.endswith("-api"):
+        return "api"
+    if module_name.endswith("-biz"):
+        return "biz"
+    return None
 
 
 def ensure_module_pom(backend_root: Path, module_name: str) -> None:
@@ -54,6 +78,46 @@ def ensure_module_pom(backend_root: Path, module_name: str) -> None:
         "例如说：会员中心等等",
         f"例如说：{module_name.removeprefix('yudao-module-')} 业务。",
     )
+    target_pom.write_text(content, encoding="utf-8")
+
+
+def ensure_split_module_pom(backend_root: Path, module_name: str, split_kind: str, api_module_name: str | None = None) -> None:
+    module_dir = backend_root / module_name
+    target_pom = module_dir / "pom.xml"
+    if target_pom.exists():
+        return
+
+    description = f"{module_name.removeprefix('yudao-module-')} 模块，自动生成。"
+    dependencies = ""
+    if split_kind == "biz" and api_module_name:
+        dependencies = f"""
+    <dependencies>
+        <dependency>
+            <groupId>cn.iocoder.boot</groupId>
+            <artifactId>{api_module_name}</artifactId>
+            <version>${{revision}}</version>
+        </dependency>
+    </dependencies>
+"""
+
+    content = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<project xmlns=\"http://maven.apache.org/POM/4.0.0\"
+         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"
+         xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>cn.iocoder.boot</groupId>
+        <artifactId>yudao</artifactId>
+        <version>${{revision}}</version>
+    </parent>
+
+    <artifactId>{module_name}</artifactId>
+    <packaging>jar</packaging>
+    <name>${{project.artifactId}}</name>
+    <description>{description}</description>
+{dependencies}</project>
+"""
     target_pom.write_text(content, encoding="utf-8")
 
 
@@ -125,28 +189,218 @@ def sync_frontend(generated_dir: Path, frontend_root: Path) -> list[str]:
     return sorted(frontend_dirs)
 
 
-def sync_backend(generated_dir: Path, backend_root: Path) -> list[str]:
+def coerce_scalar(value: str) -> Any:
+    value = value.strip()
+    if value in {"true", "True"}:
+        return True
+    if value in {"false", "False"}:
+        return False
+    if value in {"null", "None", ""}:
+        return None if value != "" else ""
+    return value.strip('"').strip("'")
+
+
+def parse_minimal_yaml(text: str) -> dict[str, Any]:
+    """Parse the small YAML subset used by tools/codegen/split_api_biz.yml.
+
+    PyYAML is used when available. The fallback supports nested mappings and
+    scalar lists, which is enough for the checked-in split config.
+    """
+    try:
+        import yaml  # type: ignore
+
+        parsed = yaml.safe_load(text) or {}
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    rows: list[tuple[int, str]] = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        rows.append((len(line) - len(line.lstrip(" ")), line.strip()))
+
+    def parse_block(index: int, indent: int) -> tuple[Any, int]:
+        if index >= len(rows):
+            return {}, index
+        is_list = rows[index][1].startswith("- ")
+        if is_list:
+            result: list[Any] = []
+            while index < len(rows):
+                row_indent, stripped = rows[index]
+                if row_indent < indent:
+                    break
+                if row_indent > indent:
+                    raise ValueError(f"unexpected nested list indentation: {stripped}")
+                if not stripped.startswith("- "):
+                    break
+                result.append(coerce_scalar(stripped[2:]))
+                index += 1
+            return result, index
+
+        result: dict[str, Any] = {}
+        while index < len(rows):
+            row_indent, stripped = rows[index]
+            if row_indent < indent:
+                break
+            if row_indent > indent:
+                raise ValueError(f"unexpected mapping indentation: {stripped}")
+            if stripped.startswith("- "):
+                break
+            if ":" not in stripped:
+                raise ValueError(f"invalid yaml line: {stripped}")
+            key, value = stripped.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            index += 1
+            if value:
+                result[key] = coerce_scalar(value)
+                continue
+            if index < len(rows) and rows[index][0] > row_indent:
+                child, index = parse_block(index, rows[index][0])
+                result[key] = child
+            else:
+                result[key] = {}
+        return result, index
+
+    parsed, _ = parse_block(0, rows[0][0] if rows else 0)
+    return parsed if isinstance(parsed, dict) else {}
+
+def load_split_config(path: Path | None) -> dict[str, Any]:
+    default_config: dict[str, Any] = {
+        "split_api_biz": {
+            "enabled": False,
+            "default": False,
+            "default_api_packages": ["api", "enums"],
+            "default_biz_packages": ["controller", "service", "dal", "convert", "job", "listener"],
+            "modules": {},
+        }
+    }
+    if path is None or not path.exists():
+        return default_config
+    parsed = parse_minimal_yaml(path.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        return default_config
+    cfg = default_config
+    cfg.update(parsed)
+    cfg.setdefault("split_api_biz", default_config["split_api_biz"])
+    return cfg
+
+
+def split_settings(config: dict[str, Any], module_name: str) -> dict[str, Any]:
+    root = config.get("split_api_biz", {}) or {}
+    module = module_key(module_name)
+    module_cfg = ((root.get("modules") or {}).get(module) or {}) if isinstance(root.get("modules") or {}, dict) else {}
+    enabled = bool(root.get("enabled", False)) and bool(module_cfg.get("enabled", root.get("default", False)))
+    return {
+        "enabled": enabled,
+        "api_packages": list(module_cfg.get("api_packages") or root.get("default_api_packages") or ["api", "enums"]),
+        "biz_packages": list(module_cfg.get("biz_packages") or root.get("default_biz_packages") or []),
+        "module": module,
+    }
+
+
+def first_module_package_segment(rel: Path, module: str) -> str | None:
+    parts = rel.parts
+    for idx, part in enumerate(parts[:-1]):
+        if part == module and idx > 0 and parts[idx - 1] == "module" and idx + 1 < len(parts):
+            return parts[idx + 1]
+    # Fallback for fixtures or non-standard package roots: src/main/java/<segment>/...
+    if len(parts) > 4 and parts[:3] == ("src", "main", "java"):
+        return parts[3]
+    return None
+
+
+def classify_module_files(module_dir: Path, settings: dict[str, Any]) -> tuple[list[Path], list[Path]]:
+    module = settings["module"]
+    api_packages = set(settings["api_packages"])
+    all_files = [p.relative_to(module_dir) for p in module_dir.rglob("*") if p.is_file()]
+    api_files: list[Path] = []
+    biz_files: list[Path] = []
+    for rel in all_files:
+        if rel.name == "pom.xml":
+            continue
+        segment = first_module_package_segment(rel, module)
+        if segment in api_packages:
+            api_files.append(rel)
+        else:
+            biz_files.append(rel)
+    return api_files, biz_files
+
+
+def sync_backend(generated_dir: Path, backend_root: Path, split_config: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
     modules = find_backend_modules(generated_dir)
     backend_modules: list[str] = []
+    split_results: list[dict[str, Any]] = []
 
     if not modules:
         print("No generated backend modules found")
-        return backend_modules
+        return backend_modules, split_results
 
     for module_dir in modules:
         module_name = module_dir.name
-        target_module_dir = backend_root / module_name
-        target_module_dir.mkdir(parents=True, exist_ok=True)
+        # If upstream already generated api/biz modules, preserve them directly.
+        if module_suffix(module_name):
+            target_module_dir = backend_root / module_name
+            target_module_dir.mkdir(parents=True, exist_ok=True)
+            copy_tree_contents(module_dir, target_module_dir)
+            ensure_module_pom(backend_root, module_name)
+            ensure_root_module_declared(backend_root, module_name)
+            if module_suffix(module_name) == "biz":
+                ensure_server_dependency(backend_root, module_name)
+            backend_modules.append(module_name)
+            split_results.append({"module": module_key(module_name), "source": module_name, "mode": "already_split"})
+            print(f"Synced already split backend module {module_name}")
+            continue
 
-        copy_tree_contents(module_dir, target_module_dir)
-        ensure_module_pom(backend_root, module_name)
-        ensure_root_module_declared(backend_root, module_name)
-        ensure_server_dependency(backend_root, module_name)
+        settings = split_settings(split_config, module_name)
+        if not settings["enabled"]:
+            target_module_dir = backend_root / module_name
+            target_module_dir.mkdir(parents=True, exist_ok=True)
+            copy_tree_contents(module_dir, target_module_dir)
+            ensure_module_pom(backend_root, module_name)
+            ensure_root_module_declared(backend_root, module_name)
+            ensure_server_dependency(backend_root, module_name)
+            backend_modules.append(module_name)
+            split_results.append({"module": settings["module"], "source": module_name, "mode": "disabled"})
+            print(f"Synced backend module {module_name}")
+            continue
 
-        backend_modules.append(module_name)
-        print(f"Synced backend module {module_name}")
+        api_module_name = f"{module_name}-api"
+        biz_module_name = f"{module_name}-biz"
+        api_dir = backend_root / api_module_name
+        biz_dir = backend_root / biz_module_name
+        api_dir.mkdir(parents=True, exist_ok=True)
+        biz_dir.mkdir(parents=True, exist_ok=True)
 
-    return backend_modules
+        api_files, biz_files = classify_module_files(module_dir, settings)
+        copy_selected_files(module_dir, api_dir, api_files)
+        copy_selected_files(module_dir, biz_dir, biz_files)
+        ensure_split_module_pom(backend_root, api_module_name, "api")
+        ensure_split_module_pom(backend_root, biz_module_name, "biz", api_module_name=api_module_name)
+        ensure_root_module_declared(backend_root, api_module_name)
+        ensure_root_module_declared(backend_root, biz_module_name)
+        ensure_server_dependency(backend_root, biz_module_name)
+
+        backend_modules.extend([api_module_name, biz_module_name])
+        split_results.append(
+            {
+                "module": settings["module"],
+                "source": module_name,
+                "mode": "split",
+                "api_module": api_module_name,
+                "biz_module": biz_module_name,
+                "api_packages": settings["api_packages"],
+                "biz_packages": settings["biz_packages"],
+                "api_file_count": len(api_files),
+                "biz_file_count": len(biz_files),
+            }
+        )
+        print(f"Split backend module {module_name} -> {api_module_name}, {biz_module_name}")
+
+    return backend_modules, split_results
 
 
 def copy_file(src: Path, dst: Path) -> None:
@@ -185,9 +439,11 @@ def build_manifest(
     repo_root: Path,
     frontend_dirs: list[str],
     backend_modules: list[str],
-) -> dict:
+    split_config_path: Path | None,
+    split_results: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": args.publish_mode,
         "repo_kind": repo_kind,
@@ -214,6 +470,10 @@ def build_manifest(
             "table_prefix_env": os.getenv("CODEGEN_TABLE_PREFIX", ""),
             "base_package": os.getenv("CODEGEN_BASE_PACKAGE", "cn.iocoder.yudao"),
         },
+        "split_api_biz": {
+            "config_path": str(split_config_path) if split_config_path else "",
+            "results": split_results,
+        },
         "outputs": {
             "frontend_dirs": frontend_dirs,
             "backend_modules": backend_modules,
@@ -223,31 +483,32 @@ def build_manifest(
             "Review generated app/user controllers for unsafe admin API exposure.",
             "Review tenant/user/data-permission boundaries.",
             "Confirm generated frontend routes, menus, and permissions.",
+            "Confirm api/biz split files landed in the expected module.",
             "Confirm module POMs and aggregator POMs are correct.",
             "Run target backend/frontend builds before merge or release.",
         ],
     }
 
 
-def write_manifest(repo_root: Path, manifest: dict) -> None:
+def write_manifest(repo_root: Path, manifest: dict[str, Any]) -> None:
     generated_dir = repo_root / "generated"
     generated_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = generated_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    # Backward-compatible location for existing consumers.
     legacy_path = repo_root / "generated-manifest.json"
     legacy_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(f"Wrote manifest to {manifest_path} and {legacy_path}")
 
 
-def write_report(repo_root: Path, manifest: dict) -> None:
+def write_report(repo_root: Path, manifest: dict[str, Any]) -> None:
     generated_dir = repo_root / "generated"
     generated_dir.mkdir(parents=True, exist_ok=True)
     report_path = generated_dir / "codegen-report.md"
     outputs = manifest["outputs"]
     target = manifest["target"]
+    split_results = manifest.get("split_api_biz", {}).get("results", [])
     lines = [
         "# Codegen Report",
         "",
@@ -262,6 +523,10 @@ def write_report(repo_root: Path, manifest: dict) -> None:
         "## Backend modules",
         "",
         *(f"- `{m}`" for m in outputs["backend_modules"]),
+        "",
+        "## api/biz split",
+        "",
+        *(f"- `{r.get('source')}`: `{r.get('mode')}`" for r in split_results),
         "",
         "## Frontend directories",
         "",
@@ -287,12 +552,15 @@ def main() -> None:
     parser.add_argument("--frontend-repo", default="yudao-ui-admin-vue3")
     parser.add_argument("--backend-branch", default="master-jdk17")
     parser.add_argument("--frontend-branch", default="master")
+    parser.add_argument("--split-config", default="")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[2]
     generated_dir = Path(args.generated_dir).resolve()
     backend_root = Path(args.backend_root).resolve()
     frontend_root = Path(args.frontend_root).resolve()
+    split_config_path = Path(args.split_config).resolve() if args.split_config else project_root / "tools" / "codegen" / "split_api_biz.yml"
+    split_config = load_split_config(split_config_path)
 
     if not generated_dir.exists():
         raise FileNotFoundError(f"generated dir not found: {generated_dir}")
@@ -302,7 +570,7 @@ def main() -> None:
         raise FileNotFoundError(f"frontend root not found: {frontend_root}")
 
     frontend_dirs = sync_frontend(generated_dir, frontend_root)
-    backend_modules = sync_backend(generated_dir, backend_root)
+    backend_modules, split_results = sync_backend(generated_dir, backend_root, split_config)
     sync_workflow_templates(project_root, backend_root, frontend_root)
 
     backend_manifest = build_manifest(
@@ -311,6 +579,8 @@ def main() -> None:
         repo_root=backend_root,
         frontend_dirs=frontend_dirs,
         backend_modules=backend_modules,
+        split_config_path=split_config_path,
+        split_results=split_results,
     )
     frontend_manifest = build_manifest(
         args=args,
@@ -318,6 +588,8 @@ def main() -> None:
         repo_root=frontend_root,
         frontend_dirs=frontend_dirs,
         backend_modules=backend_modules,
+        split_config_path=split_config_path,
+        split_results=split_results,
     )
 
     write_manifest(backend_root, backend_manifest)
