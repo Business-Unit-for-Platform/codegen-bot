@@ -72,6 +72,18 @@ on:
         description: "Optional single module table prefix"
         required: false
         default: ""
+      business_sql_repo:
+        description: "Optional repository that contains business SQL, e.g. Business-Unit-for-Debet/requirements"
+        required: false
+        default: ""
+      business_sql_ref:
+        description: "Ref for business_sql_repo"
+        required: false
+        default: "main"
+      business_sql_path:
+        description: "SQL file or directory path inside business_sql_repo"
+        required: false
+        default: ""
   push:
     branches: [ master-jdk17 ]
     paths:
@@ -103,6 +115,9 @@ jobs:
       TARGET_PRIVATE: ${{ github.event.inputs.target_private || 'false' }}
       CODEGEN_ENGINE_REPO: ${{ github.event.inputs.codegen_engine_repo || 'YunaiV/ruoyi-vue-pro' }}
       CODEGEN_ENGINE_REF: ${{ github.event.inputs.codegen_engine_ref || 'master-jdk17' }}
+      BUSINESS_SQL_REPO: ${{ github.event.inputs.business_sql_repo || '' }}
+      BUSINESS_SQL_REF: ${{ github.event.inputs.business_sql_ref || 'main' }}
+      BUSINESS_SQL_PATH: ${{ github.event.inputs.business_sql_path || '' }}
 
     services:
       mysql:
@@ -138,6 +153,35 @@ jobs:
           ref: ${{ env.CODEGEN_ENGINE_REF }}
           path: ruoyi
           fetch-depth: 1
+
+      - name: Checkout business SQL repo
+        if: ${{ env.BUSINESS_SQL_REPO != '' }}
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.BUSINESS_SQL_REPO }}
+          ref: ${{ env.BUSINESS_SQL_REF }}
+          path: business-sql-source
+          fetch-depth: 1
+
+      - name: Prepare business SQL
+        if: ${{ env.BUSINESS_SQL_REPO != '' && env.BUSINESS_SQL_PATH != '' }}
+        run: |
+          set -euo pipefail
+          src="${GITHUB_WORKSPACE}/business-sql-source/${BUSINESS_SQL_PATH}"
+          dst="${GITHUB_WORKSPACE}/sql/schema"
+          mkdir -p "${dst}"
+          if [[ -d "${src}" ]]; then
+            find "${src}" -type f -name '*.sql' -print0 | while IFS= read -r -d '' file; do
+              cp "${file}" "${dst}/$(basename "${file}")"
+            done
+          elif [[ -f "${src}" ]]; then
+            cp "${src}" "${dst}/$(basename "${src}")"
+          else
+            echo "ERROR: business SQL path not found: ${src}"
+            exit 1
+          fi
+          echo "== prepared business SQL =="
+          find "${dst}" -type f -name '*.sql' | sort
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -178,6 +222,9 @@ jobs:
           echo "LAYOUT_MODE=${LAYOUT_MODE}"
           echo "CODEGEN_ENGINE_REPO=${CODEGEN_ENGINE_REPO}"
           echo "CODEGEN_ENGINE_REF=${CODEGEN_ENGINE_REF}"
+          echo "BUSINESS_SQL_REPO=${BUSINESS_SQL_REPO}"
+          echo "BUSINESS_SQL_REF=${BUSINESS_SQL_REF}"
+          echo "BUSINESS_SQL_PATH=${BUSINESS_SQL_PATH}"
           echo "== top level =="
           ls -la
           echo "== workspace tree depth 3 =="

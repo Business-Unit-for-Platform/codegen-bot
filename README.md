@@ -160,6 +160,9 @@ bash tools/codegen/publish.sh
 - `codegen_modules`
 - `codegen_module_name`
 - `codegen_table_prefix`
+- `business_sql_repo`
+- `business_sql_ref`
+- `business_sql_path`
 
 ## 输出布局
 
