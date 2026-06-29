@@ -11,6 +11,7 @@ FRONTEND_REPO="${FRONTEND_REPO:-yudao-ui-admin-vue3}"
 BACKEND_BRANCH="${BACKEND_BRANCH:-master-jdk17}"
 FRONTEND_BRANCH="${FRONTEND_BRANCH:-master}"
 PUBLISH_MODE="${PUBLISH_MODE:-update_existing_repo_with_pr}"
+PUBLISH_TARGET="${PUBLISH_TARGET:-full-stack}"
 PR_BRANCH_PREFIX="${PR_BRANCH_PREFIX:-codegen}"
 TARGET_PRIVATE="${TARGET_PRIVATE:-false}"
 
@@ -178,6 +179,7 @@ sync_generated_code() {
     --frontend-repo "${FRONTEND_REPO}" \
     --backend-branch "${BACKEND_BRANCH}" \
     --frontend-branch "${FRONTEND_BRANCH}" \
+    --publish-target "${PUBLISH_TARGET}" \
     --split-config "${SPLIT_API_BIZ_CONFIG:-${ROOT}/tools/codegen/split_api_biz.yml}" \
     --layout-mode "${LAYOUT_MODE:-yudao-upstream}"
 }
@@ -267,11 +269,26 @@ validate_mode() {
   esac
 }
 
+validate_target() {
+  case "${PUBLISH_TARGET}" in
+    full-stack|backend-only) ;;
+    *)
+      echo "ERROR: unsupported PUBLISH_TARGET=${PUBLISH_TARGET}; expected full-stack or backend-only"
+      exit 1
+      ;;
+  esac
+}
+
+target_includes_frontend() {
+  [[ "${PUBLISH_TARGET}" == "full-stack" ]]
+}
+
 git config --global user.name "future-codegen-bot"
 git config --global user.email "actions@users.noreply.github.com"
 
 require_env GH_TOKEN
 validate_mode
+validate_target
 mkdir -p "${WORK_DIR}"
 
 BACKEND_DIR="${WORK_DIR}/${BACKEND_REPO}"
@@ -282,22 +299,30 @@ case "${PUBLISH_MODE}" in
     echo "==> Publish mode: rebuild_from_upstream"
     echo "==> Delete existing GitHub repos if any"
     delete_repo_if_exists "${BACKEND_REPO}"
-    delete_repo_if_exists "${FRONTEND_REPO}"
+    if target_includes_frontend; then
+      delete_repo_if_exists "${FRONTEND_REPO}"
+    fi
 
     echo "==> Bootstrap new repos from Gitee working tree"
     bootstrap_repo_from_gitee "${BACKEND_REPO}" "${GITEE_BACKEND_URL}" "${GITEE_BACKEND_BRANCH}" "Backend repo synced from Gitee branch ${GITEE_BACKEND_BRANCH} + codegen"
-    bootstrap_repo_from_gitee "${FRONTEND_REPO}" "${GITEE_FRONTEND_URL}" "${GITEE_FRONTEND_BRANCH}" "Frontend repo synced from Gitee branch ${GITEE_FRONTEND_BRANCH} + codegen"
+    if target_includes_frontend; then
+      bootstrap_repo_from_gitee "${FRONTEND_REPO}" "${GITEE_FRONTEND_URL}" "${GITEE_FRONTEND_BRANCH}" "Frontend repo synced from Gitee branch ${GITEE_FRONTEND_BRANCH} + codegen"
+    fi
 
     echo "==> Clone recreated GitHub repos"
     clone_target "${BACKEND_REPO}" "${BACKEND_DIR}" "${BACKEND_BRANCH}"
-    clone_target "${FRONTEND_REPO}" "${FRONTEND_DIR}" "${FRONTEND_BRANCH}"
+    if target_includes_frontend; then
+      clone_target "${FRONTEND_REPO}" "${FRONTEND_DIR}" "${FRONTEND_BRANCH}"
+    fi
 
     echo "==> Sync generated code into GitHub repos"
     sync_generated_code "${BACKEND_DIR}" "${FRONTEND_DIR}"
 
     echo "==> Commit and push generated code"
     commit_and_push "${BACKEND_DIR}" "chore: sync generated backend code" "${BACKEND_BRANCH}" || true
-    commit_and_push "${FRONTEND_DIR}" "chore: sync generated frontend code" "${FRONTEND_BRANCH}" || true
+    if target_includes_frontend; then
+      commit_and_push "${FRONTEND_DIR}" "chore: sync generated frontend code" "${FRONTEND_BRANCH}" || true
+    fi
     ;;
 
   update_existing_repo_with_pr)
@@ -306,20 +331,24 @@ case "${PUBLISH_MODE}" in
       echo "ERROR: backend repo ${OWNER}/${BACKEND_REPO} does not exist. Use rebuild_from_upstream for disposable/generated rebuilds."
       exit 1
     fi
-    if ! repo_exists "${FRONTEND_REPO}"; then
-      echo "ERROR: frontend repo ${OWNER}/${FRONTEND_REPO} does not exist. Use rebuild_from_upstream for disposable/generated rebuilds."
+    if target_includes_frontend && ! repo_exists "${FRONTEND_REPO}"; then
+      echo "ERROR: frontend repo ${OWNER}/${FRONTEND_REPO} does not exist. Use rebuild_from_upstream for disposable/generated rebuilds, or set PUBLISH_TARGET=backend-only."
       exit 1
     fi
 
     clone_target "${BACKEND_REPO}" "${BACKEND_DIR}" "${BACKEND_BRANCH}"
-    clone_target "${FRONTEND_REPO}" "${FRONTEND_DIR}" "${FRONTEND_BRANCH}"
+    if target_includes_frontend; then
+      clone_target "${FRONTEND_REPO}" "${FRONTEND_DIR}" "${FRONTEND_BRANCH}"
+    fi
 
     ts="$(date -u +%Y%m%d%H%M%S)"
     BACKEND_PR_BRANCH="${PR_BRANCH_PREFIX}/backend-${ts}"
     FRONTEND_PR_BRANCH="${PR_BRANCH_PREFIX}/frontend-${ts}"
 
     (cd "${BACKEND_DIR}" && git checkout -B "${BACKEND_PR_BRANCH}")
-    (cd "${FRONTEND_DIR}" && git checkout -B "${FRONTEND_PR_BRANCH}")
+    if target_includes_frontend; then
+      (cd "${FRONTEND_DIR}" && git checkout -B "${FRONTEND_PR_BRANCH}")
+    fi
 
     echo "==> Sync generated code into existing repos"
     sync_generated_code "${BACKEND_DIR}" "${FRONTEND_DIR}"
@@ -331,7 +360,7 @@ case "${PUBLISH_MODE}" in
       create_pr_if_possible "${BACKEND_REPO}" "${BACKEND_PR_BRANCH}" "${BACKEND_BRANCH}" "chore: sync generated backend code" "${body_file}"
     fi
 
-    if commit_and_push "${FRONTEND_DIR}" "chore: sync generated frontend code" "${FRONTEND_PR_BRANCH}"; then
+    if target_includes_frontend && commit_and_push "${FRONTEND_DIR}" "chore: sync generated frontend code" "${FRONTEND_PR_BRANCH}"; then
       create_pr_if_possible "${FRONTEND_REPO}" "${FRONTEND_PR_BRANCH}" "${FRONTEND_BRANCH}" "chore: sync generated frontend code" "${body_file}"
     fi
     ;;

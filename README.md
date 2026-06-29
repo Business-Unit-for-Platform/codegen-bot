@@ -96,6 +96,31 @@ bash tools/codegen/publish.sh
 - 写入 `generated/manifest.json` 和 `generated/codegen-report.md`。
 - push 分支并尝试创建 PR。
 
+## 发布目标
+
+`tools/codegen/publish.sh` 支持两个发布目标。
+
+### full-stack
+
+默认目标，同时同步后端仓库和管理端前端仓库：
+
+```bash
+PUBLISH_TARGET=full-stack \
+bash tools/codegen/publish.sh
+```
+
+### backend-only
+
+只同步后端仓库，适用于 Debet 这类尚未创建管理端前端仓库、或当前只需要生成后端业务模块的项目：
+
+```bash
+PUBLISH_TARGET=backend-only \
+LAYOUT_MODE=future-layout \
+bash tools/codegen/publish.sh
+```
+
+backend-only 不要求 `FRONTEND_REPO` 存在，不同步前端代码，也不写前端 manifest/report。
+
 ### rebuild_from_upstream
 
 适用于一次性生成仓库、演示仓库、或需要从最新上游重新构建的底座仓库：
@@ -127,6 +152,7 @@ bash tools/codegen/publish.sh
 - `backend_branch`
 - `frontend_branch`
 - `publish_mode`
+- `publish_target`
 - `layout_mode`
 - `target_private`
 - `codegen_engine_repo`

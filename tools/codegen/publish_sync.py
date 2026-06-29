@@ -178,9 +178,14 @@ def ensure_future_module_aggregate_pom(backend_root: Path, module: str, module_d
     aggregate_pom.write_text(content, encoding="utf-8")
 
 def insert_before_first(text: str, needle: str, block: str) -> str:
-    if needle not in text:
+    if needle in text:
+        return text.replace(needle, block + needle, 1)
+
+    stripped_needle = needle.strip()
+    match = re.search(rf"^[ \\t]*{re.escape(stripped_needle)}", text, flags=re.MULTILINE)
+    if not match:
         return text
-    return text.replace(needle, block + needle, 1)
+    return text[:match.start()] + block + text[match.start():]
 
 
 def ensure_root_module_declared(backend_root: Path, module_path: str) -> None:
@@ -521,15 +526,16 @@ def copy_file(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def sync_workflow_templates(project_root: Path, backend_root: Path, frontend_root: Path) -> None:
+def sync_workflow_templates(project_root: Path, backend_root: Path, frontend_root: Path | None) -> None:
     backend_template = project_root / "templates" / "workflows" / "backend-maven.yml"
     frontend_template = project_root / "templates" / "workflows" / "frontend-build.yml"
 
     copy_file(backend_template, backend_root / ".github" / "workflows" / "backend-maven.yml")
     print(f"Synced backend workflow from {backend_template}")
 
-    copy_file(frontend_template, frontend_root / ".github" / "workflows" / "frontend-build.yml")
-    print(f"Synced frontend workflow from {frontend_template}")
+    if frontend_root is not None:
+        copy_file(frontend_template, frontend_root / ".github" / "workflows" / "frontend-build.yml")
+        print(f"Synced frontend workflow from {frontend_template}")
 
 
 def rel_files(root: Path, limit: int = 2000) -> list[str]:
@@ -557,6 +563,7 @@ def build_manifest(
         "schema_version": "1.2",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": args.publish_mode,
+        "publish_target": args.publish_target,
         "repo_kind": repo_kind,
         "layout_mode": args.layout_mode,
         "source": {
@@ -665,6 +672,7 @@ def main() -> None:
     parser.add_argument("--frontend-repo", default="yudao-ui-admin-vue3")
     parser.add_argument("--backend-branch", default="master-jdk17")
     parser.add_argument("--frontend-branch", default="master")
+    parser.add_argument("--publish-target", default=os.getenv("PUBLISH_TARGET", "full-stack"), choices=["full-stack", "backend-only"])
     parser.add_argument("--split-config", default="")
     parser.add_argument("--layout-mode", default=os.getenv("LAYOUT_MODE", "yudao-upstream"), choices=["yudao-upstream", "future-layout"])
     args = parser.parse_args()
@@ -680,12 +688,12 @@ def main() -> None:
         raise FileNotFoundError(f"generated dir not found: {generated_dir}")
     if not backend_root.exists():
         raise FileNotFoundError(f"backend root not found: {backend_root}")
-    if not frontend_root.exists():
+    if args.publish_target == "full-stack" and not frontend_root.exists():
         raise FileNotFoundError(f"frontend root not found: {frontend_root}")
 
-    frontend_dirs = sync_frontend(generated_dir, frontend_root)
+    frontend_dirs = sync_frontend(generated_dir, frontend_root) if args.publish_target == "full-stack" else []
     backend_modules, split_results = sync_backend(generated_dir, backend_root, split_config, args.layout_mode)
-    sync_workflow_templates(project_root, backend_root, frontend_root)
+    sync_workflow_templates(project_root, backend_root, frontend_root if args.publish_target == "full-stack" else None)
 
     backend_manifest = build_manifest(
         args=args,
@@ -696,20 +704,23 @@ def main() -> None:
         split_config_path=split_config_path,
         split_results=split_results,
     )
-    frontend_manifest = build_manifest(
-        args=args,
-        repo_kind="frontend",
-        repo_root=frontend_root,
-        frontend_dirs=frontend_dirs,
-        backend_modules=backend_modules,
-        split_config_path=split_config_path,
-        split_results=split_results,
-    )
+    frontend_manifest = None
+    if args.publish_target == "full-stack":
+        frontend_manifest = build_manifest(
+            args=args,
+            repo_kind="frontend",
+            repo_root=frontend_root,
+            frontend_dirs=frontend_dirs,
+            backend_modules=backend_modules,
+            split_config_path=split_config_path,
+            split_results=split_results,
+        )
 
     write_manifest(backend_root, backend_manifest)
     write_report(backend_root, backend_manifest)
-    write_manifest(frontend_root, frontend_manifest)
-    write_report(frontend_root, frontend_manifest)
+    if frontend_manifest is not None:
+        write_manifest(frontend_root, frontend_manifest)
+        write_report(frontend_root, frontend_manifest)
 
 
 if __name__ == "__main__":
