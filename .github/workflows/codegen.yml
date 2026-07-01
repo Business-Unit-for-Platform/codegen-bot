@@ -146,6 +146,14 @@ jobs:
       - name: Checkout this repo
         uses: actions/checkout@v5
 
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: Business-Unit-for-Platform
+
       - name: Checkout ruoyi-vue-pro for codegen engine
         uses: actions/checkout@v5
         with:
@@ -153,14 +161,16 @@ jobs:
           ref: ${{ env.CODEGEN_ENGINE_REF }}
           path: ruoyi
           fetch-depth: 1
+          token: ${{ steps.app-token.outputs.token }}
 
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
+      - name: Checkout ruoyi-vue-pro MySQL base SQL
+        uses: actions/checkout@v5
         with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ env.TARGET_OWNER }}
+          repository: Business-Unit-for-Platform/ruoyi-vue-pro-mysql
+          ref: main
+          path: ruoyi-vue-pro-mysql
+          fetch-depth: 1
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Checkout business SQL repo
         if: ${{ env.BUSINESS_SQL_REPO != '' }}
@@ -231,6 +241,8 @@ jobs:
           echo "LAYOUT_MODE=${LAYOUT_MODE}"
           echo "CODEGEN_ENGINE_REPO=${CODEGEN_ENGINE_REPO}"
           echo "CODEGEN_ENGINE_REF=${CODEGEN_ENGINE_REF}"
+          echo "BASE_SQL_ROOT=${GITHUB_WORKSPACE}/ruoyi-vue-pro-mysql"
+          echo "BASE_SQL_FILES=ruoyi-vue-pro.sql"
           echo "BUSINESS_SQL_REPO=${BUSINESS_SQL_REPO}"
           echo "BUSINESS_SQL_REF=${BUSINESS_SQL_REF}"
           echo "BUSINESS_SQL_PATH=${BUSINESS_SQL_PATH}"
@@ -242,6 +254,7 @@ jobs:
           ls -la "${GITHUB_WORKSPACE}/tools/codegen" || true
           ls -la "${GITHUB_WORKSPACE}/sql" || true
           ls -la "${GITHUB_WORKSPACE}/ruoyi" || true
+          ls -la "${GITHUB_WORKSPACE}/ruoyi-vue-pro-mysql" || true
 
       - name: Wait MySQL
         run: |
@@ -278,6 +291,8 @@ jobs:
           CODEGEN_DB_NAME: ruoyi-vue-pro
           CODEGEN_OUTPUT_DIR: ${{ github.workspace }}/out/generated
           CODEGEN_BASE_PACKAGE: cn.iocoder.yudao
+          BASE_SQL_ROOT: ${{ github.workspace }}/ruoyi-vue-pro-mysql
+          BASE_SQL_FILES: ruoyi-vue-pro.sql
           CODEGEN_MODULES: ${{ github.event.inputs.codegen_modules || '' }}
           CODEGEN_MODULE_NAME: ${{ github.event.inputs.codegen_module_name || '' }}
           CODEGEN_TABLE_PREFIX: ${{ github.event.inputs.codegen_table_prefix || '' }}

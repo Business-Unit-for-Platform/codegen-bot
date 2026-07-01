@@ -57,7 +57,7 @@ bash tools/codegen/run.sh
 
 脚本会：
 
-1. 重建数据库并导入 RuoYi/Yudao 基础 SQL。
+1. 重建数据库并从 `Business-Unit-for-Platform/ruoyi-vue-pro-mysql` 导入 RuoYi/Yudao 基础 SQL，默认导入 `ruoyi-vue-pro.sql`。
 2. 导入 `sql/schema/*.sql` 下的全部业务 SQL。
 3. 按模块前缀逐个运行 Yudao 代码生成。
 4. 将所有模块输出到同一个 `out/generated` 目录。
@@ -143,6 +143,28 @@ bash tools/codegen/publish.sh
 - 直接推送到目标分支。
 
 注意：该模式是显式重建模式，只用于可重建目标，不应用于长期业务仓库。
+
+## 数据库 SQL 来源
+
+codegen 使用的基础数据库 SQL 固定来自：
+
+```text
+Business-Unit-for-Platform/ruoyi-vue-pro-mysql
+```
+
+workflow 会 checkout 该仓库到：
+
+```text
+${GITHUB_WORKSPACE}/ruoyi-vue-pro-mysql
+```
+
+默认导入：
+
+```text
+ruoyi-vue-pro.sql
+```
+
+这避免从 codegen engine repo 内部路径读取数据库脚本，也让数据库版本由 Platform 的 MySQL SQL 仓库统一管理。
 
 ## GitHub Actions 输入
 

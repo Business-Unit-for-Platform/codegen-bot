@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUOYI_DIR="${ROOT_DIR}/ruoyi"
+BASE_SQL_ROOT="${BASE_SQL_ROOT:-${ROOT_DIR}/ruoyi-vue-pro-mysql}"
+BASE_SQL_FILES="${BASE_SQL_FILES:-ruoyi-vue-pro.sql}"
 
 MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
 MYSQL_PORT="${MYSQL_PORT:-3306}"
@@ -38,12 +40,38 @@ mysql_exec -e "DROP DATABASE IF EXISTS \`${CODEGEN_DB_NAME}\`;"
 mysql_exec -e "CREATE DATABASE \`${CODEGEN_DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
 echo "== import ruoyi base sql =="
-BASE_SQL="${RUOYI_DIR}/sql/mysql/ruoyi-vue-pro.sql"
-if [[ ! -f "${BASE_SQL}" ]]; then
-  echo "ERROR: missing base sql: ${BASE_SQL}"
+if [[ ! -d "${BASE_SQL_ROOT}" ]]; then
+  echo "ERROR: missing base sql root: ${BASE_SQL_ROOT}"
   exit 1
 fi
-mysql_exec "${CODEGEN_DB_NAME}" < "${BASE_SQL}"
+
+BASE_SQL_LIST=()
+IFS=',' read -r -a BASE_SQL_SPECS <<< "${BASE_SQL_FILES}"
+for spec in "${BASE_SQL_SPECS[@]}"; do
+  spec="${spec//[[:space:]]/}"
+  [[ -z "${spec}" ]] && continue
+  if [[ "${spec}" == "*.sql" ]]; then
+    while IFS= read -r f; do
+      BASE_SQL_LIST+=("${f}")
+    done < <(find "${BASE_SQL_ROOT}" -maxdepth 1 -type f -name '*.sql' | sort)
+  else
+    BASE_SQL_LIST+=("${BASE_SQL_ROOT}/${spec}")
+  fi
+done
+
+if [[ ${#BASE_SQL_LIST[@]} -eq 0 ]]; then
+  echo "ERROR: no base sql files resolved from BASE_SQL_FILES=${BASE_SQL_FILES}"
+  exit 1
+fi
+
+for base_sql in "${BASE_SQL_LIST[@]}"; do
+  if [[ ! -f "${base_sql}" ]]; then
+    echo "ERROR: missing base sql: ${base_sql}"
+    exit 1
+  fi
+  echo "import base -> ${base_sql}"
+  mysql_exec "${CODEGEN_DB_NAME}" < "${base_sql}"
+done
 
 echo "== snapshot base tables =="
 mapfile -t BASE_TABLES < <(
