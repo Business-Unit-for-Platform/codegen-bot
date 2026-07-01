@@ -571,7 +571,7 @@ def build_manifest(
             "engine_ref": os.getenv("CODEGEN_ENGINE_REF", "master-jdk17"),
         },
         "generator": {
-            "repo": os.getenv("GITHUB_REPOSITORY", "FutureTechQuant/codegen-bot"),
+            "repo": os.getenv("GITHUB_REPOSITORY", "Business-Unit-for-Platform/codegen-bot"),
             "commit": os.getenv("GITHUB_SHA", ""),
             "workflow": os.getenv("GITHUB_WORKFLOW", ""),
             "run_id": os.getenv("GITHUB_RUN_ID", ""),
@@ -667,9 +667,9 @@ def main() -> None:
     parser.add_argument("--backend-root", required=True)
     parser.add_argument("--frontend-root", required=True)
     parser.add_argument("--publish-mode", default="update_existing_repo_with_pr")
-    parser.add_argument("--target-owner", default="FutureTechQuant")
-    parser.add_argument("--backend-repo", default="ruoyi-vue-pro")
-    parser.add_argument("--frontend-repo", default="yudao-ui-admin-vue3")
+    parser.add_argument("--target-owner", default="Business-Unit-for-Platform")
+    parser.add_argument("--backend-repo", default="future-vue-pro")
+    parser.add_argument("--frontend-repo", default="future-ui-admin-vue3")
     parser.add_argument("--backend-branch", default="master-jdk17")
     parser.add_argument("--frontend-branch", default="master")
     parser.add_argument("--publish-target", default=os.getenv("PUBLISH_TARGET", "full-stack"), choices=["full-stack", "backend-only"])

@@ -6,19 +6,19 @@ on:
       target_owner:
         description: "Target GitHub owner/org"
         required: true
-        default: "FutureTechQuant"
+        default: "Business-Unit-for-Platform"
       backend_repo:
         description: "Target backend repository"
         required: true
-        default: "ruoyi-vue-pro"
+        default: "future-vue-pro"
       frontend_repo:
         description: "Target frontend repository"
         required: true
-        default: "yudao-ui-admin-vue3"
+        default: "future-ui-admin-vue3"
       backend_branch:
         description: "Backend base branch"
         required: true
-        default: "master-jdk17"
+        default: "master"
       frontend_branch:
         description: "Frontend base branch"
         required: true
@@ -43,7 +43,7 @@ on:
         description: "Backend output layout"
         required: true
         type: choice
-        default: "yudao-upstream"
+        default: "future-layout"
         options:
           - yudao-upstream
           - future-layout
@@ -55,7 +55,7 @@ on:
       codegen_engine_repo:
         description: "RuoYi/Yudao codegen engine repository"
         required: true
-        default: "YunaiV/ruoyi-vue-pro"
+        default: "Business-Unit-for-Platform/ruoyi-vue-pro"
       codegen_engine_ref:
         description: "RuoYi/Yudao codegen engine ref"
         required: true
@@ -85,7 +85,7 @@ on:
         required: false
         default: ""
   push:
-    branches: [ master-jdk17 ]
+    branches: [ main ]
     paths:
       - "sql/**"
       - "tools/**"
@@ -104,16 +104,16 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      TARGET_OWNER: ${{ github.event.inputs.target_owner || 'FutureTechQuant' }}
-      BACKEND_REPO: ${{ github.event.inputs.backend_repo || 'ruoyi-vue-pro' }}
-      FRONTEND_REPO: ${{ github.event.inputs.frontend_repo || 'yudao-ui-admin-vue3' }}
-      BACKEND_BRANCH: ${{ github.event.inputs.backend_branch || 'master-jdk17' }}
+      TARGET_OWNER: ${{ github.event.inputs.target_owner || 'Business-Unit-for-Platform' }}
+      BACKEND_REPO: ${{ github.event.inputs.backend_repo || 'future-vue-pro' }}
+      FRONTEND_REPO: ${{ github.event.inputs.frontend_repo || 'future-ui-admin-vue3' }}
+      BACKEND_BRANCH: ${{ github.event.inputs.backend_branch || 'master' }}
       FRONTEND_BRANCH: ${{ github.event.inputs.frontend_branch || 'master' }}
       PUBLISH_MODE: ${{ github.event.inputs.publish_mode || 'update_existing_repo_with_pr' }}
       PUBLISH_TARGET: ${{ github.event.inputs.publish_target || 'full-stack' }}
-      LAYOUT_MODE: ${{ github.event.inputs.layout_mode || 'yudao-upstream' }}
+      LAYOUT_MODE: ${{ github.event.inputs.layout_mode || 'future-layout' }}
       TARGET_PRIVATE: ${{ github.event.inputs.target_private || 'false' }}
-      CODEGEN_ENGINE_REPO: ${{ github.event.inputs.codegen_engine_repo || 'YunaiV/ruoyi-vue-pro' }}
+      CODEGEN_ENGINE_REPO: ${{ github.event.inputs.codegen_engine_repo || 'Business-Unit-for-Platform/ruoyi-vue-pro' }}
       CODEGEN_ENGINE_REF: ${{ github.event.inputs.codegen_engine_ref || 'master-jdk17' }}
       BUSINESS_SQL_REPO: ${{ github.event.inputs.business_sql_repo || '' }}
       BUSINESS_SQL_REF: ${{ github.event.inputs.business_sql_ref || 'main' }}
