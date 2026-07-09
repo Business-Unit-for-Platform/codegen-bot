@@ -75,7 +75,7 @@ on:
       business_sql_repo:
         description: "Optional repository that contains business SQL, e.g. Business-Unit-for-Debet/requirements"
         required: false
-        default: ""
+        default: "Business-Unit-for-Platform/ruoyi-vue-pro-mysql"
       business_sql_ref:
         description: "Ref for business_sql_repo"
         required: false
@@ -83,7 +83,7 @@ on:
       business_sql_path:
         description: "SQL file or directory path inside business_sql_repo"
         required: false
-        default: ""
+        default: "business"
   push:
     branches: [ main ]
     paths:
@@ -104,6 +104,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      APP_ID: ${{ vars.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
       TARGET_OWNER: ${{ github.event.inputs.target_owner || 'Business-Unit-for-Platform' }}
       BACKEND_REPO: ${{ github.event.inputs.backend_repo || 'future-vue-pro' }}
       FRONTEND_REPO: ${{ github.event.inputs.frontend_repo || 'future-ui-admin-vue3' }}
@@ -115,9 +117,9 @@ jobs:
       TARGET_PRIVATE: ${{ github.event.inputs.target_private || 'false' }}
       CODEGEN_ENGINE_REPO: ${{ github.event.inputs.codegen_engine_repo || 'Business-Unit-for-Platform/ruoyi-vue-pro' }}
       CODEGEN_ENGINE_REF: ${{ github.event.inputs.codegen_engine_ref || 'master-jdk17' }}
-      BUSINESS_SQL_REPO: ${{ github.event.inputs.business_sql_repo || '' }}
+      BUSINESS_SQL_REPO: ${{ github.event.inputs.business_sql_repo || 'Business-Unit-for-Platform/ruoyi-vue-pro-mysql' }}
       BUSINESS_SQL_REF: ${{ github.event.inputs.business_sql_ref || 'main' }}
-      BUSINESS_SQL_PATH: ${{ github.event.inputs.business_sql_path || '' }}
+      BUSINESS_SQL_PATH: ${{ github.event.inputs.business_sql_path || 'business' }}
 
     services:
       mysql:
@@ -148,10 +150,11 @@ jobs:
 
       - name: Generate GitHub App token
         id: app-token
+        if: ${{ env.APP_ID != '' && env.APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
           owner: Business-Unit-for-Platform
 
       - name: Checkout ruoyi-vue-pro for codegen engine
@@ -161,7 +164,7 @@ jobs:
           ref: ${{ env.CODEGEN_ENGINE_REF }}
           path: ruoyi
           fetch-depth: 1
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Checkout ruoyi-vue-pro MySQL base SQL
         uses: actions/checkout@v5
@@ -170,7 +173,7 @@ jobs:
           ref: main
           path: ruoyi-vue-pro-mysql
           fetch-depth: 1
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || secrets.BUSINESS_SQL_TOKEN || github.token }}
 
       - name: Checkout business SQL repo
         if: ${{ env.BUSINESS_SQL_REPO != '' }}
@@ -180,7 +183,7 @@ jobs:
           ref: ${{ env.BUSINESS_SQL_REF }}
           path: business-sql-source
           fetch-depth: 1
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || secrets.BUSINESS_SQL_TOKEN || github.token }}
 
       - name: Prepare business SQL
         if: ${{ env.BUSINESS_SQL_REPO != '' && env.BUSINESS_SQL_PATH != '' }}
@@ -242,7 +245,7 @@ jobs:
           echo "CODEGEN_ENGINE_REPO=${CODEGEN_ENGINE_REPO}"
           echo "CODEGEN_ENGINE_REF=${CODEGEN_ENGINE_REF}"
           echo "BASE_SQL_ROOT=${GITHUB_WORKSPACE}/ruoyi-vue-pro-mysql"
-          echo "BASE_SQL_FILES=ruoyi-vue-pro.sql"
+          echo "BASE_SQL_FILES=original/ruoyi-vue-pro.sql"
           echo "BUSINESS_SQL_REPO=${BUSINESS_SQL_REPO}"
           echo "BUSINESS_SQL_REF=${BUSINESS_SQL_REF}"
           echo "BUSINESS_SQL_PATH=${BUSINESS_SQL_PATH}"
@@ -292,8 +295,8 @@ jobs:
           CODEGEN_OUTPUT_DIR: ${{ github.workspace }}/out/generated
           CODEGEN_BASE_PACKAGE: cn.iocoder.yudao
           BASE_SQL_ROOT: ${{ github.workspace }}/ruoyi-vue-pro-mysql
-          BASE_SQL_FILES: ruoyi-vue-pro.sql
-          CODEGEN_MODULES: ${{ github.event.inputs.codegen_modules || '' }}
+          BASE_SQL_FILES: original/ruoyi-vue-pro.sql
+          CODEGEN_MODULES: ${{ github.event.inputs.codegen_modules || 'academic:academic_,appoint:appoint_,asset:asset_,course:course_,edu:edu_,exam:exam_,gaokao:gaokao_,live:live_,school:school_,system:system_dict_tag_' }}
           CODEGEN_MODULE_NAME: ${{ github.event.inputs.codegen_module_name || '' }}
           CODEGEN_TABLE_PREFIX: ${{ github.event.inputs.codegen_table_prefix || '' }}
           REDIS_HOST: 127.0.0.1
@@ -332,7 +335,7 @@ jobs:
           done
 
       - name: Publish generated code
-        if: ${{ steps.run-codegen.conclusion == 'success' }}
+        if: ${{ steps.run-codegen.conclusion == 'success' && steps.app-token.outputs.token != '' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

@@ -58,7 +58,7 @@ bash tools/codegen/run.sh
 脚本会：
 
 1. 重建数据库并从 `Business-Unit-for-Platform/ruoyi-vue-pro-mysql` 导入 RuoYi/Yudao 基础 SQL，默认导入 `ruoyi-vue-pro.sql`。
-2. 导入 `sql/schema/*.sql` 下的全部业务 SQL。
+2. 默认从 `Business-Unit-for-Platform/ruoyi-vue-pro-mysql/business` 准备业务 SQL，也可通过 workflow 输入覆盖。
 3. 按模块前缀逐个运行 Yudao 代码生成。
 4. 将所有模块输出到同一个 `out/generated` 目录。
 5. 最后统一生成 app controller，并由发布脚本同步到目标仓库。
@@ -161,10 +161,25 @@ ${GITHUB_WORKSPACE}/ruoyi-vue-pro-mysql
 默认导入：
 
 ```text
-ruoyi-vue-pro.sql
+original/ruoyi-vue-pro.sql
 ```
 
 这避免从 codegen engine repo 内部路径读取数据库脚本，也让数据库版本由 Platform 的 MySQL SQL 仓库统一管理。
+
+业务 SQL 默认来自同一个 SQL 仓库：
+
+```text
+business_sql_repo=Business-Unit-for-Platform/ruoyi-vue-pro-mysql
+business_sql_ref=main
+business_sql_path=business
+```
+
+因为 `ruoyi-vue-pro-mysql` 是私有仓库，GitHub Actions 需要以下二选一：
+
+- 配置 GitHub App：`vars.APP_ID` + `secrets.APP_PRIVATE_KEY`
+- 或配置只读 token：`secrets.BUSINESS_SQL_TOKEN`
+
+没有这些凭据时，codegen-bot 自身可以 checkout，但无法读取私有 SQL 仓库。
 
 ## GitHub Actions 输入
 
@@ -187,6 +202,14 @@ ruoyi-vue-pro.sql
 - `business_sql_repo`
 - `business_sql_ref`
 - `business_sql_path`
+
+push 触发时默认生成当前 Platform 业务模块：
+
+```text
+academic:academic_,appoint:appoint_,asset:asset_,course:course_,edu:edu_,exam:exam_,gaokao:gaokao_,live:live_,school:school_,system:system_dict_tag_
+```
+
+其中 `system` 必须使用较窄的 `system_dict_tag_` 前缀，避免把 ruoyi 原始 `system_*` 基础表纳入业务代码生成。
 
 ## 输出布局
 
